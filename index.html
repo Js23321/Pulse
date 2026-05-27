@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pulse</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<div id="authScreen">
+  <div class="auth-shell">
+    <div class="auth-intro">
+      <div class="auth-badge">Pulse AI inside</div>
+      <h1>Build quiet momentum with Pulse.</h1>
+      <p>Track habits, goals, workouts, coding, study, and notes in one calm daily workspace.</p>
+      <div class="auth-points">
+        <div class="auth-point">
+          <span>Daily habits</span>
+          <strong>Check in once, keep your streaks visible.</strong>
+        </div>
+        <div class="auth-point">
+          <span>Incremental goals</span>
+          <strong>Log progress for workouts, coding, and study without clutter.</strong>
+        </div>
+        <div class="auth-point">
+          <span>Pulse AI</span>
+          <strong>Keep coaching nearby in the top bar and mobile nav.</strong>
+        </div>
+      </div>
+    </div>
+
+    <div class="auth-card">
+      <div class="auth-logo">pulse<span>.</span></div>
+      <p class="auth-sub">A premium daily tracker for habits, goals, and reflection.</p>
+      <div class="auth-toggle">
+        <button class="auth-tab active" id="tabIn" onclick="switchTab('in')">Sign in</button>
+        <button class="auth-tab" id="tabUp" onclick="switchTab('up')">Create account</button>
+      </div>
+      <div class="form-group">
+        <label class="form-label" id="authUserLabel">Username</label>
+        <input id="authUser" class="form-input" type="text" placeholder="username" autocomplete="username" autocapitalize="none" onkeydown="if(event.key==='Enter')submitAuth()"/>
+      </div>
+      <div class="form-group" style="position:relative">
+        <label class="form-label">Password</label>
+        <input id="authPass" class="form-input" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')submitAuth()"/>
+        <button class="pass-toggle" onclick="togglePassVis()" id="passToggle" type="button">
+          <svg id="eyeIcon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 10s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z"/><circle cx="10" cy="10" r="3"/></svg>
+        </button>
+      </div>
+      <div id="authErr" class="auth-err hidden"></div>
+      <button class="btn btn-primary" id="authBtn" style="width:100%;justify-content:center;margin-top:4px" onclick="submitAuth()">Sign in</button>
+      <p class="auth-foot" id="authFoot">Accounts are stored on this device for now, so you can start using Pulse right away.</p>
+    </div>
+  </div>
+</div>
+
+<div id="verifyScreen" class="hidden">
+  <div class="auth-shell" style="min-height:100vh;justify-items:center;align-items:center;padding:32px">
+    <div class="auth-card" style="max-width:480px">
+      <div class="auth-logo">pulse<span>.</span></div>
+      <p class="auth-sub">Verify your email to finish setting up your account.</p>
+      <div class="auth-point" style="margin-bottom:18px">
+        <span>Email verification</span>
+        <strong id="verifyCopy">We sent a verification link to your email address.</strong>
+      </div>
+      <div style="display:grid;gap:10px">
+        <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="checkVerificationStatus()">I verified my email</button>
+        <button class="btn btn-outline" style="width:100%;justify-content:center" onclick="resendVerificationEmail()">Resend verification email</button>
+        <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="signOut()">Use another account</button>
+      </div>
+      <p class="auth-foot" style="margin-top:18px">After you click the link in your inbox, come back here and tap “I verified my email.”</p>
+    </div>
+  </div>
+</div>
+
+<div id="appWrap" class="app hidden">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <div class="sidebar-logo">pulse<span>.</span></div>
+      <div class="sidebar-copy">Daily focus, without the noise.</div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <button class="nav-link active" data-page="dashboard" onclick="nav('dashboard')">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+        Home
+      </button>
+      <button class="nav-link" data-page="habits" onclick="nav('habits')">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+        Habits
+      </button>
+      <button class="nav-link" data-page="goals" onclick="nav('goals')">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+        Goals
+      </button>
+      <button class="nav-link" data-page="notes" onclick="nav('notes')">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+        Notes
+      </button>
+      <button class="nav-link ai-link" data-page="ai" onclick="nav('ai')">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"/><path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"/></svg>
+        Pulse AI
+      </button>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <button class="sidebar-user" onclick="openSettings()">
+        <div class="user-avatar" id="userAvatar">P</div>
+        <div class="user-info">
+          <div class="user-name" id="sidebarName">User</div>
+          <div class="user-meta">Settings &amp; account</div>
+        </div>
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor" style="color:var(--text3);flex-shrink:0"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main" id="mainArea">
+    <header class="topbar">
+      <div class="topbar-left">
+        <div>
+          <div class="topbar-page" id="topbarTitle">Home</div>
+          <div class="topbar-meta" id="topbarDate">Today</div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button class="ai-pill" onclick="openPageAI()" id="aiTopbarBtn">
+          <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"/><path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"/></svg>
+          Ask Pulse AI
+        </button>
+      </div>
+    </header>
+
+    <div id="pageContent"></div>
+  </div>
+
+  <div id="aiPanel" class="ai-panel">
+    <div class="ai-hd">
+      <div class="ai-hd-left">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"/><path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"/></svg>
+        <span>Pulse AI</span>
+      </div>
+    </div>
+
+    <div class="ai-intro">
+      <div class="ai-intro-title">Coaching, not clutter.</div>
+      <div class="ai-intro-text">Ask for a quick recap, a next step, or a gentle push based on your current progress.</div>
+    </div>
+
+    <div id="aiMessages" class="ai-msgs"></div>
+
+    <div class="ai-input-row">
+      <input id="aiInput" class="ai-input" type="text" placeholder="Ask about your progress..." onkeydown="if(event.key==='Enter')sendAI()"/>
+      <button class="ai-send" onclick="sendAI()">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"/></svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<nav class="mob-nav hidden" id="mobNav">
+  <button class="mob-tab active" data-page="dashboard" onclick="nav('dashboard')">
+    <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z"/></svg>
+    Home
+  </button>
+  <button class="mob-tab" data-page="habits" onclick="nav('habits')">
+    <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+    Habits
+  </button>
+  <button class="mob-tab" data-page="goals" onclick="nav('goals')">
+    <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+    Goals
+  </button>
+  <button class="mob-tab" data-page="notes" onclick="nav('notes')">
+    <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+    Notes
+  </button>
+  <button class="mob-tab" data-page="ai" onclick="nav('ai')">
+    <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"/><path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"/></svg>
+    Pulse AI
+  </button>
+</nav>
+
+<div id="modalWrap"></div>
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
