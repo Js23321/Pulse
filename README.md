@@ -42,4 +42,4 @@ Pulse is built around sustainable progress.
 
 The goal is not to optimize every minute of the day, but to create a system that is calm, consistent, and easy to return to every day.
 
-Small actions repeated over time create momentum.
+Small actions repeated over time create momentum and consistency.
