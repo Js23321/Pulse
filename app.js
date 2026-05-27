@@ -1,8 +1,18 @@
-const DEV_AI = {
-  enabled: false,
-  provider: "groq", // "groq" or "gemini"
-  apiKey: "PASTE_YOUR_API_KEY_HERE",
-  model: "YOUR_MODEL_HERE",
+const AI_CONFIG = {
+  enabled: true,
+  endpoint: "/api/ai",
+  model: "gemini-2.5-flash-lite",
+  personality: {
+    identity: "You are Pulse AI, a thoughtful personal productivity coach inside the Pulse app.",
+    tone: "Be warm, clear, calm, and practical. Sound encouraging without sounding cheesy.",
+    behavior: [
+      "Keep responses concise and actionable.",
+      "Prefer the next best step over long theory.",
+      "Notice momentum, patterns, and gentle accountability opportunities.",
+      "When the user seems overwhelmed, simplify and reduce the plan.",
+      "Use plain language and avoid sounding robotic."
+    ],
+  },
 };
 
 const FIREBASE_AUTH = {
@@ -48,6 +58,13 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 
+function validateShortName(value, fieldName = "Username") {
+  const clean = String(value || "").trim();
+  if (clean.length < 3) return `${fieldName} must be at least 3 characters.`;
+  if (clean.length > 20) return `${fieldName} must be 20 characters or fewer.`;
+  return "";
+}
+
 let currentUser = null;
 let authMode = "in";
 let curPage = "dashboard";
@@ -74,12 +91,13 @@ let lastDashboardRingOffset = null;
 let firebaseClient = null;
 let firebaseAuthReady = null;
 let saveTimer = null;
-let verificationNotice = "";
 
 const PAGE_TITLES = {
   dashboard: "Home",
   habits: "Habits",
   goals: "Goals",
+  workout: "Workout",
+  study: "Study",
   notes: "Notebook",
   ai: "Pulse AI",
 };
@@ -88,6 +106,8 @@ const PAGE_META = {
   dashboard: "Your daily pulse",
   habits: "Build consistency day by day",
   goals: "Track measurable progress",
+  workout: "Training, recovery, and strength goals",
+  study: "Learning plans, deep work, and study notes",
   notes: "Notebook and activity notes",
   ai: "Whole-account assistant",
 };
@@ -282,25 +302,6 @@ function syncAuthUI() {
   }
 }
 
-function hideVerifyScreen() {
-  const el = document.getElementById("verifyScreen");
-  if (el) el.classList.add("hidden");
-}
-
-function showVerifyScreen(user, notice = "") {
-  hideVerifyScreen();
-  document.getElementById("authScreen").classList.add("hidden");
-  document.getElementById("appWrap").classList.add("hidden");
-  document.getElementById("mobNav").classList.add("hidden");
-  const wrap = document.getElementById("verifyScreen");
-  const copy = document.getElementById("verifyCopy");
-  if (copy) {
-    const email = user?.email || currentUser?.email || "your email address";
-    copy.textContent = notice || `We sent a verification link to ${email}. Click the link in that email to activate your account.`;
-  }
-  if (wrap) wrap.classList.remove("hidden");
-}
-
 async function hashPw(str) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
   return Array.from(new Uint8Array(buf))
@@ -351,8 +352,6 @@ async function doSignUp(username, pw) {
       const fb = await ensureFirebase();
       const clean = username.trim();
       const cred = await fb.authApi.createUserWithEmailAndPassword(fb.auth, clean, pw);
-      await fb.authApi.sendEmailVerification(cred.user);
-      verificationNotice = `We sent a verification link to ${cred.user.email || clean}. Click it, then come back here to continue.`;
       return { uid: cred.user.uid, username: cred.user.email || clean, email: cred.user.email || clean };
     } catch (error) {
       return { error: firebaseAuthError(error) };
@@ -361,6 +360,8 @@ async function doSignUp(username, pw) {
 
   const users = getUsers();
   const clean = username.trim();
+  const nameError = validateShortName(clean, "Username");
+  if (nameError) return { error: nameError };
   const key = getUserKey(clean);
   if (users.find((u) => (u.usernameKey || getUserKey(u.username)) === key)) return { error: "Username already taken." };
   if (pw.length < 6) return { error: "Password must be at least 6 characters." };
@@ -463,7 +464,6 @@ async function submitAuth() {
 
 function showAuth() {
   syncAuthUI();
-  hideVerifyScreen();
   document.getElementById("authScreen").classList.remove("hidden");
   document.getElementById("appWrap").classList.add("hidden");
   document.getElementById("mobNav").classList.add("hidden");
@@ -471,7 +471,6 @@ function showAuth() {
 
 function showApp() {
   syncAuthUI();
-  hideVerifyScreen();
   document.getElementById("authScreen").classList.add("hidden");
   document.getElementById("appWrap").classList.remove("hidden");
   document.getElementById("mobNav").classList.remove("hidden");
@@ -492,7 +491,6 @@ async function signOut() {
     }
   }
   clearSession();
-  verificationNotice = "";
   currentUser = null;
   S = defaultState();
   aiOpen = false;
@@ -629,6 +627,117 @@ function nav(page) {
 
 function rerenderPage() {
   renderCurrentPage(false);
+}
+
+function categoryWorkspacePage(categoryId) {
+  const category = cat(categoryId);
+  const habits = S.habits.filter((h) => h.category === categoryId);
+  const goals = S.goals.filter((g) => g.category === categoryId);
+  const activeGoals = goals.filter((g) => goalCur(g) < g.target);
+  const completedGoals = goals.filter((g) => goalCur(g) >= g.target);
+  const notes = activityNotes().filter((note) => note.category === categoryId);
+  const doneToday = habits.filter((h) => h.logs && h.logs[getTodayStr()]).length;
+  const totalTarget = activeGoals.reduce((sum, g) => sum + g.target, 0);
+  const totalDone = activeGoals.reduce((sum, g) => sum + goalCur(g), 0);
+  const goalPct = totalTarget ? Math.round((totalDone / totalTarget) * 100) : 0;
+  const latestNote = notes[0];
+
+  return `
+    <div class="page-toolbar">
+      <div class="page-toolbar-copy">
+        <div class="section-title">${category.emoji} ${category.label} hub</div>
+        <div class="section-sub">Keep your ${category.label.toLowerCase()} habits, goals, and activity in one focused space without bouncing between pages.</div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-outline" onclick="openAddHabit()">+ Add habit</button>
+        <button class="btn btn-primary" onclick="openAddGoal()">+ Add goal</button>
+      </div>
+    </div>
+
+    <div class="dash-stats" style="margin-top:0;margin-bottom:18px">
+      <div class="dash-stat">
+        <div class="dash-stat-kicker">Today's habits</div>
+        <div class="dash-stat-line">
+          <div class="dash-stat-val">${doneToday}/${habits.length}</div>
+          <div class="dash-stat-text">${habits.length ? "checked off" : "none yet"}</div>
+        </div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-stat-kicker">Active goals</div>
+        <div class="dash-stat-line">
+          <div class="dash-stat-val">${activeGoals.length}</div>
+          <div class="dash-stat-text">${goalPct}% momentum</div>
+        </div>
+      </div>
+      <div class="dash-stat">
+        <div class="dash-stat-kicker">Recent activity</div>
+        <div class="dash-stat-line">
+          <div class="dash-stat-val">${notes.length}</div>
+          <div class="dash-stat-text">${latestNote ? "notes logged" : "nothing logged yet"}</div>
+        </div>
+      </div>
+    </div>
+
+    ${
+      habits.length
+        ? `
+      <div class="page-section">
+        <div class="sec-hd">
+          <div class="sec-label">${category.label} habits</div>
+          <button class="sec-action" onclick="nav('habits')">Open all habits</button>
+        </div>
+        ${habits.map((h) => habitRow(h, false)).join("")}
+      </div>
+    `
+        : `
+      <div class="empty" style="margin-bottom:18px">
+        <div class="empty-icon">${category.emoji}</div>
+        <div class="empty-title">No ${category.label.toLowerCase()} habits yet</div>
+        <div class="empty-text">Add a small repeatable habit to make this page feel alive right away.</div>
+      </div>
+    `
+    }
+
+    ${
+      activeGoals.length || completedGoals.length
+        ? `
+      <div class="page-section">
+        <div class="sec-hd">
+          <div class="sec-label">${category.label} goals</div>
+          <button class="sec-action" onclick="nav('goals')">Open all goals</button>
+        </div>
+        ${activeGoals.length ? `<div class="grid2">${activeGoals.map((g) => goalCard(g)).join("")}</div>` : ""}
+        ${completedGoals.length ? `
+          <div class="page-section">
+            <div class="sec-hd">
+              <div class="sec-label">Completed</div>
+            </div>
+            <div class="grid2">${completedGoals.map((g) => goalCard(g)).join("")}</div>
+          </div>
+        ` : ""}
+      </div>
+    `
+        : `
+      <div class="empty" style="margin-bottom:18px">
+        <div class="empty-icon">+</div>
+        <div class="empty-title">No ${category.label.toLowerCase()} goals yet</div>
+        <div class="empty-text">Create a measurable target here and this workspace will start telling a clearer story.</div>
+      </div>
+    `
+    }
+
+    <div class="page-section">
+      <div class="sec-hd">
+        <div class="sec-label">${category.label} activity</div>
+        <button class="sec-action" onclick="nav('notes')">Open notes</button>
+      </div>
+      ${
+        notes.length
+          ? `<div class="notes-stack">${notes.slice(0, 6).map((n) => noteRow(n)).join("")}</div>`
+          : `<div class="empty"><div class="empty-icon">✎</div><div class="empty-title">No ${category.label.toLowerCase()} activity yet</div><div class="empty-text">Complete a goal and add a quick note to build a useful history here.</div></div>`
+      }
+    </div>
+  `;
 }
 
 const PAGES = {
@@ -884,6 +993,14 @@ const PAGES = {
     `;
   },
 
+  workout() {
+    return categoryWorkspacePage("workout");
+  },
+
+  study() {
+    return categoryWorkspacePage("study");
+  },
+
   notes() {
     let visible = [...S.notes].filter(noteMatchesFilter);
     if (noteSearch) {
@@ -901,10 +1018,6 @@ const PAGES = {
     const activityCount = activityNotes().length;
 
     return `
-      <div class="page-toolbar">
-        <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
-      </div>
-
       <div class="notebook-composer surface-card">
         <div class="notebook-composer-title">Notebook</div>
         <div class="notebook-composer-sub">This stays as one continuous note. Edit it, close the app, come back another day, and keep writing in the same place.</div>
@@ -1357,7 +1470,7 @@ function deleteNote(id) {
 function openSettings() {
   modal(`
     <div class="modal-title">Account & settings</div>
-    <div class="form-group"><label class="form-label">Display name</label><input id="sName" class="form-input" value="${esc(S.settings.name || "")}" placeholder="${esc(currentUser?.username || "")}" autofocus></div>
+    <div class="form-group"><label class="form-label">Display name</label><input id="sName" class="form-input" value="${esc(S.settings.name || "")}" placeholder="${esc(currentUser?.username || "")}" maxlength="20" autofocus></div>
     <div class="divider"></div>
     <div class="form-label" style="margin-bottom:10px">Theme</div>
     <div style="display:flex;gap:8px;margin-bottom:16px">
@@ -1378,7 +1491,12 @@ function openSettings() {
 }
 
 function saveSettings() {
-  S.settings.name = document.getElementById("sName").value.trim();
+  const value = document.getElementById("sName").value.trim();
+  if (value) {
+    const err = validateShortName(value, "Display name");
+    if (err) return toast(err);
+  }
+  S.settings.name = value;
   save();
   closeModal();
   syncUserUI();
@@ -1424,10 +1542,21 @@ function openPageAI() {
 }
 
 function getAIConfig() {
-  if (DEV_AI.enabled && DEV_AI.apiKey && DEV_AI.apiKey !== "PASTE_YOUR_API_KEY_HERE" && DEV_AI.model && DEV_AI.model !== "YOUR_MODEL_HERE") {
-    return DEV_AI;
-  }
-  return null;
+  if (!AI_CONFIG.enabled) return null;
+  if (location.protocol === "file:") return null;
+  return AI_CONFIG;
+}
+
+function buildAISystemPrompt(scope) {
+  const config = getAIConfig();
+  const personality = config?.personality || {};
+  const rules = Array.isArray(personality.behavior) ? personality.behavior.map((rule) => `- ${rule}`).join("\n") : "";
+  return [
+    personality.identity || "You are Pulse AI.",
+    personality.tone || "Be helpful and practical.",
+    rules ? `Behavior rules:\n${rules}` : "",
+    `Current context: ${getAIContext(scope)}`,
+  ].filter(Boolean).join("\n\n");
 }
 
 function getAIContext(scope = "global") {
@@ -1439,6 +1568,8 @@ function getAIContext(scope = "global") {
   if (scope === "page") {
     if (curPage === "habits") return `Current page: Habits. User: ${currentUser?.username}. Today: ${doneToday}/${S.habits.length} habits done. Habits: ${habits}.`;
     if (curPage === "goals") return `Current page: Goals. User: ${currentUser?.username}. Goals: ${goals}.`;
+    if (curPage === "workout") return `Current page: Workout. User: ${currentUser?.username}. Workout habits: ${S.habits.filter((h) => h.category === "workout").map((h) => h.name).join(", ") || "none"}. Workout goals: ${S.goals.filter((g) => g.category === "workout").map((g) => `${g.name}: ${Math.round((goalCur(g) / g.target) * 100)}%`).join(", ") || "none"}.`;
+    if (curPage === "study") return `Current page: Study. User: ${currentUser?.username}. Study habits: ${S.habits.filter((h) => h.category === "study").map((h) => h.name).join(", ") || "none"}. Study goals: ${S.goals.filter((g) => g.category === "study").map((g) => `${g.name}: ${Math.round((goalCur(g) / g.target) * 100)}%`).join(", ") || "none"}.`;
     if (curPage === "notes") return `Current page: Notebook. User: ${currentUser?.username}. Notebook: ${notebook}. Activity notes: ${activityNotes().length}.`;
     if (curPage === "dashboard") return `Current page: Dashboard. User: ${currentUser?.username}. Today: ${doneToday}/${S.habits.length} habits done. Streak: ${streak}. Goals: ${goals}. Notebook: ${notebook}.`;
   }
@@ -1472,7 +1603,7 @@ function renderAIPanelMsgs() {
   if (!getAIConfig() && !aiLoading) {
     const hint = document.createElement("div");
     hint.className = "ai-no-key";
-    hint.innerHTML = 'Add your developer key directly in <b>app.js</b> or move AI calls behind a backend before launch.';
+    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>GEMINI_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
     wrap.appendChild(hint);
   }
 
@@ -1501,52 +1632,24 @@ function renderAIPageMsgs() {
   if (!getAIConfig() && !aiLoading) {
     const hint = document.createElement("div");
     hint.className = "ai-no-key";
-    hint.innerHTML = 'Add your developer key in <b>app.js</b>. For production, use a backend or serverless function so the key is not exposed.';
+    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>GEMINI_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
     wrap.appendChild(hint);
   }
 
   wrap.scrollTop = wrap.scrollHeight;
 }
 
-async function callGroqAI(config, messages) {
-  const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: config.model,
-      messages,
-      temperature: 0.7,
-      max_tokens: 300,
-    }),
-  });
-  const data = await resp.json();
-  return data.choices?.[0]?.message?.content || "Sorry, something went wrong.";
-}
-
-async function callGeminiAI(config, messages) {
-  const prompt = messages.map((m) => `${m.role === "assistant" ? "Assistant" : "User"}: ${m.content}`).join("\n");
-  const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent?key=${encodeURIComponent(config.apiKey)}`, {
+async function callPulseAI(config, payload) {
+  const resp = await fetch(config.endpoint, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [{ text: prompt }],
-        },
-      ],
-      generationConfig: {
-        maxOutputTokens: 300,
-        temperature: 0.7,
-      },
-    }),
+    body: JSON.stringify(payload),
   });
+  if (!resp.ok) throw new Error("AI request failed");
   const data = await resp.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "Sorry, something went wrong.";
+  return data.reply || "Sorry, something went wrong.";
 }
 
 async function runAIExchange({ inputId, scope, store, render }) {
@@ -1569,15 +1672,16 @@ async function runAIExchange({ inputId, scope, store, render }) {
   const messages = [
     {
       role: "system",
-      content: `You are Pulse AI, a warm personal productivity coach. Be concise and practical. Context: ${getAIContext(scope)}`,
+      content: buildAISystemPrompt(scope),
     },
     ...store.slice(-8).map((m) => ({ role: m.role, content: m.text })),
   ];
 
   try {
-    const reply = config.provider === "gemini"
-      ? await callGeminiAI(config, messages)
-      : await callGroqAI(config, messages);
+    const reply = await callPulseAI(config, {
+      model: config.model,
+      messages,
+    });
     store.push({ role: "assistant", text: reply });
   } catch {
     store.push({ role: "assistant", text: "Could not reach Pulse AI right now." });
@@ -1626,44 +1730,6 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
 }
 
-async function resendVerificationEmail() {
-  if (!isFirebaseConfigured()) return;
-  try {
-    const fb = await ensureFirebase();
-    const user = fb.auth.currentUser;
-    if (!user) return;
-    await fb.authApi.sendEmailVerification(user);
-    verificationNotice = `A new verification email was sent to ${user.email || "your inbox"}.`;
-    showVerifyScreen(user, verificationNotice);
-    toast("Verification email sent");
-  } catch {
-    toast("Could not send verification email");
-  }
-}
-
-async function checkVerificationStatus() {
-  if (!isFirebaseConfigured()) return;
-  try {
-    const fb = await ensureFirebase();
-    const user = fb.auth.currentUser;
-    if (!user) return;
-    await fb.authApi.reload(user);
-    if (!fb.auth.currentUser?.emailVerified) {
-      verificationNotice = `That email is not verified yet. Open the link from ${user.email || "your inbox"}, then try again.`;
-      showVerifyScreen(fb.auth.currentUser, verificationNotice);
-      toast("Email not verified yet");
-      return;
-    }
-    currentUser = mapFirebaseUser(fb.auth.currentUser);
-    verificationNotice = "";
-    S = await loadRemoteState(currentUser.uid);
-    showApp();
-    toast("Email verified");
-  } catch {
-    toast("Could not refresh verification status");
-  }
-}
-
 async function initFirebaseAuth() {
   let fb = null;
   try {
@@ -1679,18 +1745,11 @@ async function initFirebaseAuth() {
       clearPendingSave();
       if (user) {
         currentUser = mapFirebaseUser(user);
-        if (!user.emailVerified) {
-          S = defaultState();
-          showVerifyScreen(user, verificationNotice);
-        } else {
-          verificationNotice = "";
-          S = await loadRemoteState(user.uid);
-          showApp();
-        }
+        S = await loadRemoteState(user.uid);
+        showApp();
       } else {
         currentUser = null;
         S = defaultState();
-        verificationNotice = "";
         aiOpen = false;
         document.getElementById("aiPanel").classList.remove("open");
         document.getElementById("appWrap").classList.remove("ai-open");

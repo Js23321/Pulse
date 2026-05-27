@@ -55,25 +55,6 @@
   </div>
 </div>
 
-<div id="verifyScreen" class="hidden">
-  <div class="auth-shell" style="min-height:100vh;justify-items:center;align-items:center;padding:32px">
-    <div class="auth-card" style="max-width:480px">
-      <div class="auth-logo">pulse<span>.</span></div>
-      <p class="auth-sub">Verify your email to finish setting up your account.</p>
-      <div class="auth-point" style="margin-bottom:18px">
-        <span>Email verification</span>
-        <strong id="verifyCopy">We sent a verification link to your email address.</strong>
-      </div>
-      <div style="display:grid;gap:10px">
-        <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="checkVerificationStatus()">I verified my email</button>
-        <button class="btn btn-outline" style="width:100%;justify-content:center" onclick="resendVerificationEmail()">Resend verification email</button>
-        <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="signOut()">Use another account</button>
-      </div>
-      <p class="auth-foot" style="margin-top:18px">After you click the link in your inbox, come back here and tap “I verified my email.”</p>
-    </div>
-  </div>
-</div>
-
 <div id="appWrap" class="app hidden">
   <aside class="sidebar">
     <div class="sidebar-top">
@@ -93,6 +74,14 @@
       <button class="nav-link" data-page="goals" onclick="nav('goals')">
         <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
         Goals
+      </button>
+      <button class="nav-link" data-page="workout" onclick="nav('workout')">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M4 8a2 2 0 012-2h1V4a1 1 0 112 0v2h2V4a1 1 0 112 0v2h1a2 2 0 012 2v1a2 2 0 01-2 2h-1v2a1 1 0 11-2 0v-2H9v2a1 1 0 11-2 0v-2H6a2 2 0 01-2-2V8z"/></svg>
+        Workout
+      </button>
+      <button class="nav-link" data-page="study" onclick="nav('study')">
+        <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10 4l8 3-8 3-8-3 8-3zm-6 5.5 6 2.25 6-2.25V13l-6 3-6-3V9.5z"/></svg>
+        Study
       </button>
       <button class="nav-link" data-page="notes" onclick="nav('notes')">
         <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
@@ -171,6 +160,14 @@
   <button class="mob-tab" data-page="goals" onclick="nav('goals')">
     <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
     Goals
+  </button>
+  <button class="mob-tab" data-page="workout" onclick="nav('workout')">
+    <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M4 8a2 2 0 012-2h1V4a1 1 0 112 0v2h2V4a1 1 0 112 0v2h1a2 2 0 012 2v1a2 2 0 01-2 2h-1v2a1 1 0 11-2 0v-2H9v2a1 1 0 11-2 0v-2H6a2 2 0 01-2-2V8z"/></svg>
+    Workout
+  </button>
+  <button class="mob-tab" data-page="study" onclick="nav('study')">
+    <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10 4l8 3-8 3-8-3 8-3zm-6 5.5 6 2.25 6-2.25V13l-6 3-6-3V9.5z"/></svg>
+    Study
   </button>
   <button class="mob-tab" data-page="notes" onclick="nav('notes')">
     <svg class="mob-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>

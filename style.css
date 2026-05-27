@@ -408,6 +408,7 @@ button {
   padding: 12px;
   background: var(--surface-soft);
   border-color: var(--border);
+  overflow: hidden;
 }
 
 .user-avatar {
@@ -431,6 +432,8 @@ button {
 }
 
 .user-name {
+  display: block;
+  max-width: 100%;
   font-size: 13px;
   font-weight: 800;
   color: var(--text);
@@ -1739,6 +1742,12 @@ select.form-input {
   backdrop-filter: blur(22px);
   box-shadow: var(--shadow);
   z-index: 200;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.mob-nav::-webkit-scrollbar {
+  display: none;
 }
 
 [data-theme="dark"] .mob-nav {
@@ -1746,7 +1755,7 @@ select.form-input {
 }
 
 .mob-tab {
-  flex: 1;
+  flex: 0 0 74px;
   display: flex;
   flex-direction: column;
   align-items: center;
