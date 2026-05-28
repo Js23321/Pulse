@@ -24,35 +24,26 @@ module.exports = async function handler(req, res) {
 
   const body =
     typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
-  const { email, type = "verify" } = body;
+  const { email } = body;
 
   if (!email || typeof email !== "string") {
     return res.status(400).json({ error: "email is required" });
   }
 
   try {
-    // Generate the Firebase action link server-side so the link still
-    // verifies via Firebase Auth when clicked — just delivered by us.
     const appUrl = process.env.APP_URL || "https://pulse.sciencerevisions.online";
-    let link;
-    if (type === "verify") {
-      link = await admin.auth().generateEmailVerificationLink(email, {
-        url: `${appUrl}/?verified=1`,
-      });
-    } else {
-      return res.status(400).json({ error: "Unknown type" });
-    }
+
+    const link = await admin.auth().generatePasswordResetLink(email, {
+      url: `${appUrl}/?pwreset=1`,
+    });
 
     const resend = new Resend(resendKey);
-
-    // FROM address: use your own domain if you have one verified in Resend,
-    // otherwise "onboarding@resend.dev" works out-of-the-box on the free plan.
     const from = process.env.RESEND_FROM || "Pulse <onboarding@resend.dev>";
 
     await resend.emails.send({
       from,
       to: email,
-      subject: "Verify your Pulse account",
+      subject: "Reset your Pulse password",
       html: `<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
@@ -69,17 +60,17 @@ module.exports = async function handler(req, res) {
         <!-- Body -->
         <tr><td style="padding:32px 32px 24px">
           <h1 style="margin:0 0 12px;font-size:20px;font-weight:700;color:#111827;letter-spacing:-0.02em">
-            Confirm your email address
+            Reset your password
           </h1>
           <p style="margin:0 0 24px;font-size:15px;color:#4b5563;line-height:1.6">
-            Thanks for signing up for Pulse. Click the button below to verify your email and get started.
+            We received a request to reset the password for your Pulse account. Click the button below to choose a new password.
           </p>
           <a href="${link}"
              style="display:inline-block;background:#4b6ef6;color:#ffffff;padding:13px 28px;border-radius:10px;text-decoration:none;font-size:15px;font-weight:600;letter-spacing:-0.01em">
-            Verify email address →
+            Reset password →
           </a>
           <p style="margin:24px 0 0;font-size:13px;color:#9ca3af;line-height:1.5">
-            This link expires in 24 hours. If you didn't create a Pulse account you can safely ignore this email.
+            This link expires in 1 hour. If you didn't request a password reset you can safely ignore this email — your password won't change.
           </p>
         </td></tr>
         <!-- Footer -->
@@ -97,7 +88,7 @@ module.exports = async function handler(req, res) {
 
     return res.status(200).json({ sent: true });
   } catch (error) {
-    console.error("send-verification error:", error);
+    console.error("send-password-reset error:", error);
     return res.status(500).json({ error: error?.message || String(error) });
   }
 };

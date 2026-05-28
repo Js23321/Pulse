@@ -1,14 +1,30 @@
+// Recursively converts Gemini-style uppercase JSON Schema types to lowercase
+// e.g. { type: "OBJECT", properties: { x: { type: "STRING" } } }
+//   -> { type: "object", properties: { x: { type: "string" } } }
+function normaliseSchema(schema) {
+  if (!schema || typeof schema !== "object") return schema;
+  const out = { ...schema };
+  if (typeof out.type === "string") out.type = out.type.toLowerCase();
+  if (out.properties) {
+    out.properties = Object.fromEntries(
+      Object.entries(out.properties).map(([k, v]) => [k, normaliseSchema(v)])
+    );
+  }
+  if (out.items) out.items = normaliseSchema(out.items);
+  return out;
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash-lite";
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  const defaultModel = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
 
   if (!apiKey) {
-    res.status(500).json({ error: "Missing GEMINI_API_KEY" });
+    res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
     return;
   }
 
@@ -16,68 +32,68 @@ module.exports = async function handler(req, res) {
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const toolDeclarations = Array.isArray(body.tools) && body.tools.length > 0 ? body.tools : null;
-    const requestModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : model;
+    const requestModel = typeof body.model === "string" && body.model.trim() ? body.model.trim() : defaultModel;
 
-    // Separate system message from chat messages
-    const systemMsg = messages.find((m) => m.role === "system");
-    const chatMsgs = messages.filter((m) => m.role !== "system");
-
-    // Build Gemini-format contents (must alternate user/model, must start with user)
-    const contents = chatMsgs.map((m) => ({
-      role: m.role === "assistant" ? "model" : "user",
-      parts: [{ text: m.content || "" }],
+    // OpenAI-compatible message format (OpenRouter accepts this directly)
+    const formattedMessages = messages.map((m) => ({
+      role: m.role === "assistant" ? "assistant" : m.role === "system" ? "system" : "user",
+      content: m.content || "",
     }));
 
-    // Gemini requires at least one user turn
-    if (!contents.length || contents[0].role !== "user") {
-      contents.unshift({ role: "user", parts: [{ text: "(start)" }] });
-    }
-
     const requestBody = {
-      contents,
-      generationConfig: {
-        maxOutputTokens: toolDeclarations ? 800 : 300,
-        temperature: 0.7,
-      },
+      model: requestModel,
+      messages: formattedMessages,
+      max_tokens: toolDeclarations ? 800 : 300,
+      temperature: 0.7,
     };
 
-    if (systemMsg?.content) {
-      requestBody.system_instruction = { parts: [{ text: systemMsg.content }] };
-    }
-
+    // Convert Gemini-format function declarations to OpenAI tool format
     if (toolDeclarations) {
-      requestBody.tools = [{ function_declarations: toolDeclarations }];
-      requestBody.tool_config = { function_calling_config: { mode: "AUTO" } };
+      requestBody.tools = toolDeclarations.map((fn) => ({
+        type: "function",
+        function: {
+          name: fn.name,
+          description: fn.description || "",
+          parameters: normaliseSchema(fn.parameters) || { type: "object", properties: {} },
+        },
+      }));
     }
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(requestModel)}:generateContent?key=${encodeURIComponent(apiKey)}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBody),
-      }
-    );
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "HTTP-Referer": "https://pulse.sciencerevisions.online",
+        "X-Title": "Pulse",
+      },
+      body: JSON.stringify(requestBody),
+    });
 
     const data = await response.json();
 
     if (!response.ok) {
-      res.status(500).json({ error: "Gemini request failed", details: data });
+      res.status(500).json({ error: "OpenRouter request failed", details: data });
       return;
     }
 
-    const parts = data?.candidates?.[0]?.content?.parts || [];
-    const textPart = parts.find((p) => typeof p.text === "string");
-    const fnParts = parts.filter((p) => p.functionCall);
+    const message = data?.choices?.[0]?.message;
+    const reply = message?.content || null;
 
-    const reply = textPart?.text || null;
-    const actions = fnParts.map((p) => ({
-      name: p.functionCall.name,
-      args: p.functionCall.args || {},
-    }));
+    // Parse OpenAI-format tool calls back to our internal { name, args } format
+    const actions = [];
+    if (Array.isArray(message?.tool_calls)) {
+      for (const tc of message.tool_calls) {
+        if (tc.type === "function") {
+          let args = {};
+          try { args = JSON.parse(tc.function.arguments || "{}"); } catch {}
+          actions.push({ name: tc.function.name, args });
+        }
+      }
+    }
 
     if (!reply && actions.length === 0) {
-      res.status(500).json({ error: "Empty response from Gemini", details: data });
+      res.status(500).json({ error: "Empty response from OpenRouter", details: data });
       return;
     }
 
