@@ -5,7 +5,7 @@ module.exports = async function handler(req, res) {
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
-  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-2.0-flash-lite";
 
   if (!apiKey) {
     res.status(500).json({ error: "Missing GEMINI_API_KEY" });
