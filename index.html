@@ -287,6 +287,17 @@
 
     <div id="aiMessages" class="ai-msgs"></div>
 
+    <div class="ai-mode-row">
+      <div class="ai-mode-label">
+        <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+        Edit mode
+        <span class="ai-edit-badge" id="aiEditBadgePanel" style="display:none">ON</span>
+      </div>
+      <label class="ai-toggle" title="Enable Pulse AI edit mode">
+        <input type="checkbox" id="aiEditTogglePanel" onchange="onAIEditToggle(this)">
+        <span class="ai-toggle-slider"></span>
+      </label>
+    </div>
     <div class="ai-input-row">
       <input id="aiInput" class="ai-input" type="text" placeholder="Ask about your progress..." onkeydown="if(event.key==='Enter')sendAI()"/>
       <button class="ai-send" onclick="sendAI()">

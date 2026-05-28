@@ -140,6 +140,8 @@ let noteSearch = "";
 let aiOpen = false;
 let aiLoading = false;
 let aiPanelMode = "page";
+let aiEditMode = false;
+let aiPendingAction = null; // { confirmId, storeKey } — one destructive action queued at a time
 let aiPanelMsgs = [
   {
     role: "assistant",
@@ -833,7 +835,10 @@ function renderCurrentPage(animated = false) {
   syncStudyTimerUI();
   syncWorkoutTimerUI();
   syncPomodoroTimerUI();
-  if (curPage === "ai") renderAIPageMsgs();
+  if (curPage === "ai") {
+    renderAIPageMsgs();
+    syncAIEditUI(); // restore toggle + badge state after page rebuild
+  }
 }
 
 function animateDashboardRing() {
@@ -1757,6 +1762,23 @@ const PAGES = {
   ai() {
     return `
       <div class="ai-page surface-card">
+        <div class="ai-page-header">
+          <div class="ai-page-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"/><path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"/></svg>
+            Pulse AI
+            <span class="ai-edit-badge" id="aiEditBadgePage" style="display:none">EDIT</span>
+          </div>
+          <div class="ai-mode-row ai-mode-row--page">
+            <div class="ai-mode-label">
+              <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+              Edit mode
+            </div>
+            <label class="ai-toggle" title="Enable Pulse AI edit mode">
+              <input type="checkbox" id="aiEditTogglePage" onchange="onAIEditToggle(this)">
+              <span class="ai-toggle-slider"></span>
+            </label>
+          </div>
+        </div>
         <div id="aiPageMessages" class="ai-page-messages"></div>
         <div class="ai-page-input">
           <input id="aiPageInput" class="ai-input" type="text" placeholder="Ask about your full progress..." onkeydown="if(event.key==='Enter')sendAIPage()">
@@ -2309,12 +2331,96 @@ function buildAISystemPrompt(scope) {
     ? (personalities.fullscreen || {})
     : (personalities[curPage] || personalities.defaultPage || personalities.fullscreen || {});
   const rules = Array.isArray(personality.behavior) ? personality.behavior.map((rule) => `- ${rule}`).join("\n") : "";
+
+  const context = aiEditMode ? getAIContextRich(scope) : getAIContext(scope);
+
+  const modeBlock = aiEditMode
+    ? `\n\nEDIT MODE ACTIVE — You have tools to modify the user's data.
+Rules:
+- Only call tools the user explicitly asked for.
+- Max 5 tool calls per response. Never batch-delete — only one delete per response.
+- Never modify past logs or streak history.
+- For delete tools: call them normally; the app will ask the user to confirm before executing.
+- Do not invent IDs — only use IDs present in the context data above.
+- If asked for something outside your tools, explain you cannot do it in edit mode.`
+    : `\n\nASK MODE — You can only read and discuss the user's data. You cannot create, modify, or delete anything. If the user asks you to make changes, tell them to enable Edit Mode using the toggle below.`;
+
   return [
     personality.identity || "You are Pulse AI.",
     personality.tone || "Be helpful and practical.",
     rules ? `Behavior rules:\n${rules}` : "",
-    `Current context: ${getAIContext(scope)}`,
+    `Current context:\n${context}`,
+    modeBlock,
   ].filter(Boolean).join("\n\n");
+}
+
+// Rich context with IDs — used in edit mode so the AI can reference specific items
+function getAIContextRich(scope) {
+  const today = getTodayStr();
+  const page = curPage;
+  const isGlobal = scope === "global";
+
+  const allHabits = S.habits.map((h) => ({
+    id: h.id,
+    name: h.name,
+    icon: h.icon,
+    category: h.category,
+    done_today: !!(h.logs && h.logs[today]),
+    streak: habitStreak(h),
+  }));
+  const relevantHabits = isGlobal
+    ? allHabits
+    : allHabits.filter((h) => ["dashboard", "habits"].includes(page) || h.category === page);
+
+  const allGoals = S.goals.map((g) => ({
+    id: g.id,
+    name: g.name,
+    icon: g.icon,
+    category: g.category,
+    current: goalCur(g),
+    target: g.target,
+    unit: g.unit,
+    pct: Math.round((goalCur(g) / g.target) * 100),
+  }));
+  const relevantGoals = isGlobal
+    ? allGoals
+    : allGoals.filter((g) => ["dashboard", "goals"].includes(page) || g.category === page);
+
+  const checklist = (isGlobal || page === "study")
+    ? getStudyChecklist().map((i) => ({ id: i.id, text: i.text }))
+    : [];
+
+  const timers = {};
+  if (isGlobal || page === "workout") {
+    const wt = getWorkoutTimer();
+    timers.workout = {
+      running: wt.running,
+      phase: wt.phase,
+      exercises: wt.exercises.map((e, i) => ({ index: i, name: e.name, work_s: e.work, rest_s: e.rest })),
+    };
+  }
+  if (isGlobal || page === "study") {
+    const st = getStudyTimer();
+    timers.study = { running: st.running, duration_mins: st.duration, remaining_secs: st.remaining };
+    const pt = getPomodoroTimer();
+    timers.pomodoro = { running: pt.running, phase: pt.phase, work_mins: pt.duration, break_mins: pt.shortBreak };
+  }
+
+  const notes = (isGlobal || page === "notes")
+    ? activityNotes().slice(0, 8).map((n) => ({ id: n.id, goal: n.goalName || n.title, preview: (n.content || "").slice(0, 80) }))
+    : [];
+
+  const parts = [
+    `User: ${currentUser?.username || "User"}`,
+    `Page: ${PAGE_TITLES[page] || page}`,
+    `Date: ${today}`,
+    relevantHabits.length ? `Habits: ${JSON.stringify(relevantHabits)}` : null,
+    relevantGoals.length ? `Goals: ${JSON.stringify(relevantGoals)}` : null,
+    checklist.length ? `Study checklist: ${JSON.stringify(checklist)}` : null,
+    Object.keys(timers).length ? `Timers: ${JSON.stringify(timers)}` : null,
+    notes.length ? `Activity notes: ${JSON.stringify(notes)}` : null,
+  ];
+  return parts.filter(Boolean).join("\n");
 }
 
 function getAIContext(scope = "global") {
@@ -2334,22 +2440,76 @@ function getAIContext(scope = "global") {
   return `User: ${currentUser?.username}. Today: ${doneToday}/${S.habits.length} habits done. Streak: ${streak} days. Habits: ${habits}. Goals: ${goals}. Notebook: ${notebook}. Activity notes: ${activityNotes().length}.`;
 }
 
+// Builds one chat bubble — handles plain text, action chips, and confirm cards
+function buildAIMsgEl(msg) {
+  const div = document.createElement("div");
+  div.className = `ai-msg ${msg.role}`;
+
+  if (msg.text) {
+    const t = document.createElement("span");
+    t.className = "ai-msg-text";
+    t.textContent = msg.text;
+    div.appendChild(t);
+  }
+
+  if (msg.actions && msg.actions.length > 0) {
+    const wrap = document.createElement("div");
+    wrap.className = "ai-actions-wrap";
+
+    for (const action of msg.actions) {
+      const card = document.createElement("div");
+
+      if (action.status === "pending_confirm") {
+        card.className = "ai-confirm-card";
+        const msgEl = document.createElement("div");
+        msgEl.className = "ai-confirm-msg";
+        msgEl.textContent = "⚠ " + getDestructiveDescription(action.name, action.args);
+        const btns = document.createElement("div");
+        btns.className = "ai-confirm-btns";
+        const yes = document.createElement("button");
+        yes.className = "ai-confirm-yes";
+        yes.textContent = "Confirm";
+        yes.onclick = () => executeAIPendingAction(action.confirmId);
+        const no = document.createElement("button");
+        no.className = "ai-confirm-cancel";
+        no.textContent = "Cancel";
+        no.onclick = () => cancelAIPendingAction(action.confirmId);
+        btns.appendChild(yes);
+        btns.appendChild(no);
+        card.appendChild(msgEl);
+        card.appendChild(btns);
+      } else if (action.status === "confirmed" || action.status === "done") {
+        card.className = "ai-action-chip done";
+        card.textContent = "✓ " + (action.resultText || "Done");
+      } else if (action.status === "cancelled") {
+        card.className = "ai-action-chip cancelled";
+        card.textContent = "✗ Cancelled";
+      } else if (action.status === "error") {
+        card.className = "ai-action-chip error";
+        card.textContent = "✗ " + (action.resultText || "Error");
+      }
+
+      if (card.children.length || card.textContent) wrap.appendChild(card);
+    }
+
+    if (wrap.children.length) div.appendChild(wrap);
+  }
+
+  return div;
+}
+
 function renderAIPanelMsgs() {
   const wrap = document.getElementById("aiMessages");
   if (!wrap) return;
   wrap.innerHTML = "";
-  const source = aiPanelMsgs;
   const introTitle = document.querySelector(".ai-intro-title");
   const introText = document.querySelector(".ai-intro-text");
-  if (introTitle) introTitle.textContent = "Current page help";
-  if (introText) introText.textContent = `Ask about the ${PAGE_TITLES[curPage] || "current"} page and Pulse AI will focus on what is visible here while still understanding your data.`;
+  if (introTitle) introTitle.textContent = aiEditMode ? "Edit mode active" : "Current page help";
+  if (introText) introText.textContent = aiEditMode
+    ? `Pulse AI can create and edit your ${PAGE_TITLES[curPage] || "current page"} data. Destructive actions will ask for confirmation.`
+    : `Ask about the ${PAGE_TITLES[curPage] || "current"} page and Pulse AI will focus on what is visible here.`;
 
-  source.forEach((msg) => {
-    const div = document.createElement("div");
-    div.className = `ai-msg ${msg.role}`;
-    div.textContent = msg.text;
-    wrap.appendChild(div);
-  });
+  aiPanelMsgs.forEach((msg) => wrap.appendChild(buildAIMsgEl(msg)));
 
   if (aiLoading) {
     const typing = document.createElement("div");
@@ -2373,12 +2533,7 @@ function renderAIPageMsgs() {
   if (!wrap) return;
   wrap.innerHTML = "";
 
-  aiPageMsgs.forEach((msg) => {
-    const div = document.createElement("div");
-    div.className = `ai-msg ${msg.role}`;
-    div.textContent = msg.text;
-    wrap.appendChild(div);
-  });
+  aiPageMsgs.forEach((msg) => wrap.appendChild(buildAIMsgEl(msg)));
 
   if (aiLoading && curPage === "ai") {
     const typing = document.createElement("div");
@@ -2400,20 +2555,28 @@ function renderAIPageMsgs() {
 async function callPulseAI(config, payload) {
   const resp = await fetch(config.endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   if (!resp.ok) throw new Error("AI request failed");
   const data = await resp.json();
-  return data.reply || "Sorry, something went wrong.";
+  // Returns { reply: string|null, actions: [{name, args}] }
+  return {
+    reply: data.reply || null,
+    actions: Array.isArray(data.actions) ? data.actions : [],
+  };
 }
 
-async function runAIExchange({ inputId, scope, store, render }) {
+async function runAIExchange({ inputId, scope, storeKey, store, render }) {
   const input = document.getElementById(inputId);
   const text = input?.value.trim();
   if (!text || aiLoading) return;
+
+  // Block new messages while a destructive action is awaiting confirmation
+  if (aiPendingAction) {
+    toast("Please confirm or cancel the pending action first");
+    return;
+  }
 
   const config = getAIConfig();
   store.push({ role: "user", text });
@@ -2427,20 +2590,55 @@ async function runAIExchange({ inputId, scope, store, render }) {
     return;
   }
 
+  const tools = aiEditMode ? getAIToolDeclarations(scope) : [];
+
   const messages = [
-    {
-      role: "system",
-      content: buildAISystemPrompt(scope),
-    },
-    ...store.slice(-8).map((m) => ({ role: m.role, content: m.text })),
+    { role: "system", content: buildAISystemPrompt(scope) },
+    // Map history — for action-only messages substitute a results summary so Gemini
+    // doesn't receive empty content while keeping conversation alternation intact
+    ...store.slice(-10).map((m) => {
+      const text = m.text || "";
+      const actionSummary = m.actions && m.actions.length > 0
+        ? m.actions.map((a) => a.resultText || a.name).filter(Boolean).join(", ")
+        : "";
+      return { role: m.role, content: text || (actionSummary ? `[${actionSummary}]` : "(no text)") };
+    }),
   ];
 
   try {
-    const reply = await callPulseAI(config, {
+    const { reply, actions } = await callPulseAI(config, {
       model: config.model,
       messages,
+      tools,
     });
-    store.push({ role: "assistant", text: reply });
+
+    const msgActions = [];
+    let destructiveQueued = false;
+
+    // Process up to 5 actions; only 1 destructive per response
+    for (const action of (actions || []).slice(0, 5)) {
+      if (isDestructiveAction(action.name, action.args)) {
+        if (destructiveQueued) continue; // skip extra destructive actions
+        const confirmId = "conf-" + Date.now() + Math.random().toString(36).slice(2, 5);
+        msgActions.push({ name: action.name, args: action.args, status: "pending_confirm", confirmId });
+        aiPendingAction = { confirmId, storeKey };
+        destructiveQueued = true;
+      } else {
+        const result = executeAIAction(action.name, action.args);
+        msgActions.push({
+          name: action.name,
+          args: action.args,
+          status: result.success ? "done" : "error",
+          resultText: result.success ? result.message : ("Error: " + result.error),
+        });
+      }
+    }
+
+    store.push({
+      role: "assistant",
+      text: reply || (msgActions.length > 0 ? null : "Done."),
+      actions: msgActions.length > 0 ? msgActions : undefined,
+    });
   } catch {
     store.push({ role: "assistant", text: "Could not reach Pulse AI right now." });
   }
@@ -2453,6 +2651,7 @@ async function sendAI() {
   await runAIExchange({
     inputId: "aiInput",
     scope: "page",
+    storeKey: "panel",
     store: aiPanelMsgs,
     render: renderAIPanelMsgs,
   });
@@ -2462,9 +2661,550 @@ async function sendAIPage() {
   await runAIExchange({
     inputId: "aiPageInput",
     scope: "global",
+    storeKey: "page",
     store: aiPageMsgs,
     render: renderAIPageMsgs,
   });
+}
+
+// ─── AI EDIT MODE ─────────────────────────────────────────────────────────────
+
+function onAIEditToggle(checkbox) {
+  if (checkbox.checked) {
+    // Show confirmation before enabling — sync OTHER toggle first so they match
+    const otherId = checkbox.id === "aiEditTogglePanel" ? "aiEditTogglePage" : "aiEditTogglePanel";
+    const other = document.getElementById(otherId);
+    if (other) other.checked = false; // will be re-synced on confirm
+
+    modal(`
+      <div style="padding:28px 24px;text-align:center">
+        <div style="font-size:26px;margin-bottom:14px">✦</div>
+        <div class="modal-title" style="margin-bottom:8px">Enable Edit Mode?</div>
+        <div class="modal-sub" style="margin-bottom:22px;max-width:320px;margin-left:auto;margin-right:auto">
+          Edit mode gives Pulse AI the ability to <strong>create, modify, and delete</strong> your habits, goals, timers, and notes.
+          All destructive actions will always show a confirmation before executing.
+        </div>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button class="btn btn-ghost" onclick="cancelAIEditMode()">Cancel</button>
+          <button class="btn btn-primary" onclick="confirmAIEditMode()">Enable edit mode</button>
+        </div>
+      </div>
+    `);
+  } else {
+    aiEditMode = false;
+    aiPendingAction = null;
+    syncAIEditUI();
+    renderAIPanelMsgs();
+    renderAIPageMsgs();
+  }
+}
+
+function confirmAIEditMode() {
+  aiEditMode = true;
+  closeModal();
+  syncAIEditUI();
+  renderAIPanelMsgs();
+  renderAIPageMsgs();
+  toast("Edit mode on ✦");
+}
+
+function cancelAIEditMode() {
+  // Uncheck whichever toggle triggered this
+  ["aiEditTogglePanel", "aiEditTogglePage"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = false;
+  });
+  closeModal();
+}
+
+function syncAIEditUI() {
+  // Keep both toggles in sync
+  ["aiEditTogglePanel", "aiEditTogglePage"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.checked = aiEditMode;
+  });
+  // Show/hide edit badges
+  ["aiEditBadgePanel", "aiEditBadgePage"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = aiEditMode ? "inline-flex" : "none";
+  });
+  // Update input placeholders
+  const panel = document.getElementById("aiInput");
+  if (panel) panel.placeholder = aiEditMode ? "Tell Pulse AI what to do…" : "Ask about your progress…";
+  const page = document.getElementById("aiPageInput");
+  if (page) page.placeholder = aiEditMode ? "Tell Pulse AI what to do…" : "Ask about your full progress…";
+}
+
+// ─── DESTRUCTIVE ACTION HELPERS ────────────────────────────────────────────────
+
+function isDestructiveAction(toolName, args) {
+  if (["control_workout_timer", "control_study_timer", "control_pomodoro"].includes(toolName)) {
+    return args.action === "reset";
+  }
+  return ["delete_habit", "delete_goal", "delete_exercise", "delete_note"].includes(toolName);
+}
+
+function getDestructiveDescription(toolName, args) {
+  switch (toolName) {
+    case "delete_habit":     return `Delete habit "${args.habit_name}"? This cannot be undone.`;
+    case "delete_goal":      return `Delete goal "${args.goal_name}"? This cannot be undone.`;
+    case "delete_exercise":  return `Remove "${args.exercise_name}" from workout? This cannot be undone.`;
+    case "delete_note":      return `Delete "${args.note_description}"? This cannot be undone.`;
+    case "control_workout_timer": return "Reset the workout timer? All current progress will be cleared.";
+    case "control_study_timer":   return "Reset the study timer? Current session will be cleared.";
+    case "control_pomodoro":      return "Reset the Pomodoro timer? Current session will be cleared.";
+    default: return "Are you sure you want to do this? This cannot be undone.";
+  }
+}
+
+// ─── PENDING CONFIRMATION ──────────────────────────────────────────────────────
+
+function executeAIPendingAction(confirmId) {
+  if (!aiPendingAction || aiPendingAction.confirmId !== confirmId) return;
+
+  const storeKey = aiPendingAction.storeKey;
+  const store = storeKey === "page" ? aiPageMsgs : aiPanelMsgs;
+  const render = storeKey === "page" ? renderAIPageMsgs : renderAIPanelMsgs;
+
+  // Find the action in the store
+  let found = null;
+  for (const msg of store) {
+    if (!msg.actions) continue;
+    for (const action of msg.actions) {
+      if (action.confirmId === confirmId) { found = action; break; }
+    }
+    if (found) break;
+  }
+
+  if (!found) { aiPendingAction = null; return; }
+
+  const result = executeAIAction(found.name, found.args);
+  found.status = result.success ? "confirmed" : "error";
+  found.resultText = result.success ? result.message : ("Error: " + result.error);
+  aiPendingAction = null;
+  render();
+}
+
+function cancelAIPendingAction(confirmId) {
+  if (!aiPendingAction || aiPendingAction.confirmId !== confirmId) return;
+
+  const storeKey = aiPendingAction.storeKey;
+  const store = storeKey === "page" ? aiPageMsgs : aiPanelMsgs;
+  const render = storeKey === "page" ? renderAIPageMsgs : renderAIPanelMsgs;
+
+  for (const msg of store) {
+    if (!msg.actions) continue;
+    for (const action of msg.actions) {
+      if (action.confirmId === confirmId) { action.status = "cancelled"; break; }
+    }
+  }
+
+  aiPendingAction = null;
+  render();
+}
+
+// ─── TOOL DECLARATIONS (Gemini function calling format) ────────────────────────
+
+function getAIToolDeclarations(scope) {
+  if (!aiEditMode) return [];
+
+  const page = curPage;
+  const isGlobal = scope === "global";
+  const CATS = ["lifestyle", "coding", "workout", "study", "general"];
+  const today = getTodayStr();
+
+  const relevantHabits = S.habits.filter((h) =>
+    isGlobal || ["dashboard", "habits"].includes(page) || h.category === page
+  );
+  const relevantGoals = S.goals.filter((g) =>
+    isGlobal || ["dashboard", "goals"].includes(page) || g.category === page
+  );
+
+  const habitList = relevantHabits.map((h) => `${h.name}→${h.id}`).join(", ") || "none";
+  const goalList = relevantGoals.map((g) => `${g.name}→${g.id}`).join(", ") || "none";
+
+  const tools = [];
+
+  // ── HABITS ────────────────────────────────────────────────────────────────────
+  if (relevantHabits.length > 0 && (isGlobal || ["dashboard", "habits", "workout", "study"].includes(page))) {
+    tools.push({
+      name: "toggle_habit",
+      description: `Check or uncheck a habit for today. Habits: ${habitList}`,
+      parameters: { type: "OBJECT", properties: {
+        habit_id: { type: "STRING", description: "Habit ID from the list" },
+        done: { type: "BOOLEAN", description: "true = mark done, false = mark undone" },
+      }, required: ["habit_id", "done"] },
+    });
+  }
+
+  if (isGlobal || page === "habits") {
+    tools.push({
+      name: "create_habit",
+      description: "Create a new habit",
+      parameters: { type: "OBJECT", properties: {
+        name: { type: "STRING" },
+        icon: { type: "STRING", description: "Single emoji" },
+        category: { type: "STRING", description: CATS.join(" | ") },
+      }, required: ["name", "icon", "category"] },
+    });
+
+    if (relevantHabits.length > 0) {
+      tools.push({
+        name: "delete_habit",
+        description: `Delete a habit permanently. Requires user confirmation. Habits: ${habitList}`,
+        parameters: { type: "OBJECT", properties: {
+          habit_id: { type: "STRING" },
+          habit_name: { type: "STRING", description: "Name shown in confirmation" },
+        }, required: ["habit_id", "habit_name"] },
+      });
+    }
+  }
+
+  // ── GOALS ─────────────────────────────────────────────────────────────────────
+  if (relevantGoals.length > 0 && (isGlobal || ["dashboard", "goals", "workout", "study"].includes(page))) {
+    tools.push({
+      name: "log_goal",
+      description: `Log progress on a goal. Goals: ${goalList}`,
+      parameters: { type: "OBJECT", properties: {
+        goal_id: { type: "STRING" },
+        value: { type: "NUMBER" },
+        note: { type: "STRING", description: "Optional activity note (optional)" },
+      }, required: ["goal_id", "value"] },
+    });
+
+    tools.push({
+      name: "add_goal_note",
+      description: `Add an activity note to a goal. Goals: ${goalList}`,
+      parameters: { type: "OBJECT", properties: {
+        goal_id: { type: "STRING" },
+        content: { type: "STRING" },
+      }, required: ["goal_id", "content"] },
+    });
+  }
+
+  if (isGlobal || page === "goals") {
+    tools.push({
+      name: "create_goal",
+      description: "Create a new goal with a numeric target",
+      parameters: { type: "OBJECT", properties: {
+        name: { type: "STRING" },
+        icon: { type: "STRING", description: "Single emoji" },
+        category: { type: "STRING", description: CATS.join(" | ") },
+        target: { type: "NUMBER" },
+        unit: { type: "STRING", description: "e.g. km, pages, sessions" },
+      }, required: ["name", "icon", "category", "target", "unit"] },
+    });
+
+    if (relevantGoals.length > 0) {
+      tools.push({
+        name: "delete_goal",
+        description: `Delete a goal permanently. Requires user confirmation. Goals: ${goalList}`,
+        parameters: { type: "OBJECT", properties: {
+          goal_id: { type: "STRING" },
+          goal_name: { type: "STRING" },
+        }, required: ["goal_id", "goal_name"] },
+      });
+    }
+  }
+
+  // ── WORKOUT TIMER ─────────────────────────────────────────────────────────────
+  if (isGlobal || page === "workout") {
+    const wt = getWorkoutTimer();
+    const exList = wt.exercises.map((e, i) => `${i}:${e.name}`).join(", ");
+
+    tools.push({
+      name: "control_workout_timer",
+      description: "Start, pause, or reset the workout interval timer",
+      parameters: { type: "OBJECT", properties: {
+        action: { type: "STRING", description: "start | pause | reset (reset requires confirmation)" },
+      }, required: ["action"] },
+    });
+
+    tools.push({
+      name: "add_exercise",
+      description: "Add an exercise to the workout plan",
+      parameters: { type: "OBJECT", properties: {
+        name: { type: "STRING" },
+        work_seconds: { type: "NUMBER" },
+        rest_seconds: { type: "NUMBER" },
+      }, required: ["name", "work_seconds", "rest_seconds"] },
+    });
+
+    if (wt.exercises.length > 1) {
+      tools.push({
+        name: "delete_exercise",
+        description: `Remove an exercise. Requires confirmation. Exercises: ${exList}`,
+        parameters: { type: "OBJECT", properties: {
+          exercise_index: { type: "NUMBER" },
+          exercise_name: { type: "STRING" },
+        }, required: ["exercise_index", "exercise_name"] },
+      });
+    }
+  }
+
+  // ── STUDY TIMERS ──────────────────────────────────────────────────────────────
+  if (isGlobal || page === "study") {
+    tools.push({
+      name: "control_study_timer",
+      description: "Start, pause, or reset the study deep-work timer",
+      parameters: { type: "OBJECT", properties: {
+        action: { type: "STRING", description: "start | pause | reset (reset requires confirmation)" },
+      }, required: ["action"] },
+    });
+
+    tools.push({
+      name: "control_pomodoro",
+      description: "Start, pause, or reset the Pomodoro timer",
+      parameters: { type: "OBJECT", properties: {
+        action: { type: "STRING", description: "start | pause | reset (reset requires confirmation)" },
+      }, required: ["action"] },
+    });
+
+    tools.push({
+      name: "set_timer_minutes",
+      description: "Set a timer duration in minutes",
+      parameters: { type: "OBJECT", properties: {
+        timer_type: { type: "STRING", description: "study | pomodoro_work | pomodoro_break" },
+        minutes: { type: "NUMBER", description: "1–180" },
+      }, required: ["timer_type", "minutes"] },
+    });
+
+    tools.push({
+      name: "add_checklist_item",
+      description: "Add an item to the study checklist",
+      parameters: { type: "OBJECT", properties: {
+        text: { type: "STRING" },
+      }, required: ["text"] },
+    });
+
+    const cl = getStudyChecklist();
+    if (cl.length > 0) {
+      tools.push({
+        name: "complete_checklist_item",
+        description: `Mark a study checklist item done and remove it. Items: ${cl.map((i) => `${i.text}→${i.id}`).join(", ")}`,
+        parameters: { type: "OBJECT", properties: {
+          item_id: { type: "STRING" },
+        }, required: ["item_id"] },
+      });
+    }
+  }
+
+  // ── NOTES ─────────────────────────────────────────────────────────────────────
+  if (isGlobal || page === "notes") {
+    tools.push({
+      name: "write_notebook",
+      description: "Write or append content to the notebook",
+      parameters: { type: "OBJECT", properties: {
+        content: { type: "STRING" },
+      }, required: ["content"] },
+    });
+
+    const noteList = activityNotes().map((n) => `${n.goalName || n.title}→${n.id}`).join(", ");
+    if (noteList) {
+      tools.push({
+        name: "delete_note",
+        description: `Delete a note permanently. Requires confirmation. Notes: ${noteList}`,
+        parameters: { type: "OBJECT", properties: {
+          note_id: { type: "STRING" },
+          note_description: { type: "STRING", description: "Description for confirmation message" },
+        }, required: ["note_id", "note_description"] },
+      });
+
+      tools.push({
+        name: "edit_activity_note",
+        description: `Edit an activity note's content. Notes: ${noteList}`,
+        parameters: { type: "OBJECT", properties: {
+          note_id: { type: "STRING" },
+          content: { type: "STRING" },
+        }, required: ["note_id", "content"] },
+      });
+    }
+  }
+
+  return tools;
+}
+
+// ─── ACTION EXECUTOR ──────────────────────────────────────────────────────────
+
+function executeAIAction(toolName, args) {
+  try {
+    const VALID_CATS = ["lifestyle", "coding", "workout", "study", "general"];
+    switch (toolName) {
+
+      // ── HABITS ────────────────────────────────────────────────────────────────
+      case "toggle_habit": {
+        const habit = S.habits.find((h) => h.id === args.habit_id);
+        if (!habit) return { success: false, error: "Habit not found" };
+        const today = getTodayStr();
+        const currentlyDone = !!(habit.logs && habit.logs[today]);
+        if (currentlyDone !== Boolean(args.done)) toggleHabit(args.habit_id);
+        return { success: true, message: `${args.done ? "✓ Checked" : "Unchecked"} "${habit.name}"` };
+      }
+
+      case "create_habit": {
+        const category = VALID_CATS.includes(args.category) ? args.category : "general";
+        const icon = String(args.icon || cat(category).emoji).slice(0, 4);
+        S.habits.push({ id: "h" + Date.now(), name: String(args.name || "Habit").slice(0, 60), category, icon, logs: {}, createdAt: Date.now() });
+        save(); rerenderPage();
+        return { success: true, message: `Created habit "${args.name}" ${icon}` };
+      }
+
+      case "delete_habit": {
+        const idx = S.habits.findIndex((h) => h.id === args.habit_id);
+        if (idx === -1) return { success: false, error: "Habit not found" };
+        S.habits.splice(idx, 1);
+        save(); rerenderPage();
+        return { success: true, message: `Deleted "${args.habit_name}"` };
+      }
+
+      // ── GOALS ─────────────────────────────────────────────────────────────────
+      case "log_goal": {
+        const goal = S.goals.find((g) => g.id === args.goal_id);
+        if (!goal) return { success: false, error: "Goal not found" };
+        if (!goal.logs) goal.logs = [];
+        goal.logs.push({ value: Number(args.value) || 0, date: new Date().toISOString(), note: args.note || "" });
+        save(); rerenderPage();
+        return { success: true, message: `Logged ${args.value} ${goal.unit || ""} for "${goal.name}"`.trim() };
+      }
+
+      case "create_goal": {
+        const category = VALID_CATS.includes(args.category) ? args.category : "general";
+        const icon = String(args.icon || cat(category).emoji).slice(0, 4);
+        S.goals.push({ id: "g" + Date.now(), name: String(args.name || "Goal").slice(0, 60), category, icon, target: Math.max(1, Number(args.target) || 1), unit: String(args.unit || "units").slice(0, 30), logs: [], createdAt: Date.now() });
+        save(); rerenderPage();
+        return { success: true, message: `Created goal "${args.name}" — target: ${args.target} ${args.unit}` };
+      }
+
+      case "delete_goal": {
+        const idx = S.goals.findIndex((g) => g.id === args.goal_id);
+        if (idx === -1) return { success: false, error: "Goal not found" };
+        S.goals.splice(idx, 1);
+        save(); rerenderPage();
+        return { success: true, message: `Deleted goal "${args.goal_name}"` };
+      }
+
+      case "add_goal_note": {
+        const goal = S.goals.find((g) => g.id === args.goal_id);
+        if (!goal) return { success: false, error: "Goal not found" };
+        S.notes.push({ id: "n" + Date.now() + Math.random().toString(36).slice(2, 6), kind: "activity", title: goal.name, content: String(args.content || ""), category: goal.category, goalId: goal.id, goalName: goal.name, createdAt: Date.now() });
+        save();
+        return { success: true, message: `Added note to "${goal.name}"` };
+      }
+
+      // ── WORKOUT TIMER ─────────────────────────────────────────────────────────
+      case "control_workout_timer": {
+        const wt = getWorkoutTimer();
+        if (args.action === "start")  { if (!wt.running) { wt.running = true; runWorkoutTimer(); syncWorkoutTimerUI(); save(); } }
+        else if (args.action === "pause") { if (wt.running)  { wt.running = false; clearWorkoutTimerTick(); syncWorkoutTimerUI(); save(); } }
+        else if (args.action === "reset") { resetWorkoutTimer(); save(); }
+        const wtLabel = { start: "started", pause: "paused", reset: "reset" }[args.action] || args.action;
+        return { success: true, message: `Workout timer ${wtLabel}` };
+      }
+
+      case "add_exercise": {
+        const wt = getWorkoutTimer();
+        wt.exercises.push({ name: String(args.name || "Exercise").slice(0, 50), work: Math.max(5, Math.min(3600, Number(args.work_seconds) || 45)), rest: Math.max(0, Math.min(3600, Number(args.rest_seconds) || 30)) });
+        save(); rerenderPage();
+        requestAnimationFrame(() => {
+          const rows = document.querySelectorAll(".workspace-plan-row");
+          const last = rows[rows.length - 1];
+          if (last) last.classList.add("row-added");
+        });
+        return { success: true, message: `Added exercise "${args.name}"` };
+      }
+
+      case "delete_exercise": {
+        removeWorkoutExercise(Number(args.exercise_index));
+        return { success: true, message: `Removed "${args.exercise_name}"` };
+      }
+
+      // ── STUDY TIMERS ──────────────────────────────────────────────────────────
+      case "control_study_timer": {
+        const st = getStudyTimer();
+        if (args.action === "start")  { if (!st.running) { st.running = true; runStudyTimer(); syncStudyTimerUI(); save(); } }
+        else if (args.action === "pause") { if (st.running)  { st.running = false; clearStudyTimerTick(); syncStudyTimerUI(); save(); } }
+        else if (args.action === "reset") { resetStudyTimer(); save(); }
+        const stLabel = { start: "started", pause: "paused", reset: "reset" }[args.action] || args.action;
+        return { success: true, message: `Study timer ${stLabel}` };
+      }
+
+      case "control_pomodoro": {
+        const pt = getPomodoroTimer();
+        if (args.action === "start")  { if (!pt.running) { pt.running = true; startPomodoroTimerTick(); syncPomodoroTimerUI(); save(); } }
+        else if (args.action === "pause") { if (pt.running)  { pt.running = false; clearPomodoroTimerTick(); syncPomodoroTimerUI(); save(); } }
+        else if (args.action === "reset") { resetPomodoroTimer(); save(); }
+        const ptLabel = { start: "started", pause: "paused", reset: "reset" }[args.action] || args.action;
+        return { success: true, message: `Pomodoro ${ptLabel}` };
+      }
+
+      case "set_timer_minutes": {
+        const mins = Math.max(1, Math.min(180, Number(args.minutes) || 25));
+        if (args.timer_type === "study") {
+          const st = getStudyTimer();
+          st.duration = mins;
+          if (!st.running) st.remaining = mins * 60;
+          save(); syncStudyTimerUI();
+        } else if (args.timer_type === "pomodoro_work") {
+          const pt = getPomodoroTimer();
+          pt.duration = mins;
+          if (!pt.running && pt.phase === "work") pt.remaining = mins * 60;
+          save(); syncPomodoroTimerUI();
+        } else if (args.timer_type === "pomodoro_break") {
+          const pt = getPomodoroTimer();
+          pt.shortBreak = mins;
+          save(); syncPomodoroTimerUI();
+        }
+        return { success: true, message: `Set ${args.timer_type} to ${mins} min` };
+      }
+
+      // ── CHECKLIST ─────────────────────────────────────────────────────────────
+      case "add_checklist_item": {
+        const item = { id: "cl" + Date.now() + Math.random().toString(36).slice(2, 5), text: String(args.text || "").slice(0, 200), done: false };
+        getStudyChecklist().push(item);
+        save();
+        appendChecklistItem(item);
+        return { success: true, message: `Added "${args.text}" to checklist` };
+      }
+
+      case "complete_checklist_item": {
+        const item = getStudyChecklist().find((i) => i.id === args.item_id);
+        if (!item) return { success: false, error: "Item not found" };
+        const name = item.text;
+        completeChecklistItem(args.item_id);
+        return { success: true, message: `Completed "${name}" ✓` };
+      }
+
+      // ── NOTES ─────────────────────────────────────────────────────────────────
+      case "write_notebook": {
+        const doc = getNotebookDoc();
+        const addition = String(args.content || "");
+        doc.content = doc.content ? doc.content + "\n\n" + addition : addition;
+        save();
+        return { success: true, message: "Added to notebook" };
+      }
+
+      case "delete_note": {
+        const idx = S.notes.findIndex((n) => n.id === args.note_id);
+        if (idx === -1) return { success: false, error: "Note not found" };
+        S.notes.splice(idx, 1);
+        save(); rerenderPage();
+        return { success: true, message: `Deleted "${args.note_description}"` };
+      }
+
+      case "edit_activity_note": {
+        const note = S.notes.find((n) => n.id === args.note_id);
+        if (!note) return { success: false, error: "Note not found" };
+        note.content = String(args.content || "");
+        save();
+        return { success: true, message: "Note updated" };
+      }
+
+      default:
+        return { success: false, error: `Unknown tool: ${toolName}` };
+    }
+  } catch (err) {
+    return { success: false, error: err?.message || "Execution error" };
+  }
 }
 
 function modal(html) {

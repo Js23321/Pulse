@@ -2414,6 +2414,11 @@ select.form-input {
   animation: fadeUp 0.18s ease both;
 }
 
+/* Force text to full bubble width so action chips always sit below, never beside */
+.ai-msg-text {
+  display: block;
+}
+
 .ai-msg.user {
   align-self: flex-end;
   color: #fff;
@@ -2496,6 +2501,215 @@ select.form-input {
 .ai-no-key b {
   color: var(--accent-text);
   cursor: pointer;
+}
+
+/* ── AI Mode Row (toggle bar) ────────────────────────────────────────────── */
+
+.ai-mode-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px 12px;
+  border-top: 1px solid var(--border);
+  gap: 10px;
+}
+
+.ai-mode-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text2);
+  letter-spacing: 0.01em;
+}
+
+/* ── Apple-style toggle ─────────────────────────────────────────────────── */
+
+.ai-toggle {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 24px;
+  flex-shrink: 0;
+}
+
+.ai-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.ai-toggle-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 24px;
+  background: var(--border-strong);
+  cursor: pointer;
+  transition: background 0.22s ease;
+}
+
+.ai-toggle-slider::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.22);
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ai-toggle input:checked + .ai-toggle-slider {
+  background: var(--accent);
+}
+
+.ai-toggle input:checked + .ai-toggle-slider::after {
+  transform: translateX(16px);
+}
+
+/* ── Edit mode badge ─────────────────────────────────────────────────────── */
+
+.ai-edit-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  background: var(--accent-bg);
+  color: var(--accent-text);
+  border-radius: 99px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ── Full AI page header ─────────────────────────────────────────────────── */
+
+.ai-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ai-page-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.ai-mode-row--page {
+  border: none;
+  padding: 0;
+}
+
+/* ── Action chips (safe actions) ─────────────────────────────────────────── */
+
+.ai-actions-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.ai-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  align-self: flex-start;
+}
+
+.ai-action-chip.done {
+  background: rgba(21, 147, 109, 0.1);
+  color: var(--success);
+  border: 1px solid rgba(21, 147, 109, 0.18);
+}
+
+.ai-action-chip.cancelled {
+  background: var(--surface-soft);
+  color: var(--text3);
+  border: 1px solid var(--border);
+}
+
+.ai-action-chip.error {
+  background: rgba(220, 60, 60, 0.08);
+  color: #dc3c3c;
+  border: 1px solid rgba(220, 60, 60, 0.15);
+}
+
+/* ── Inline confirm card ──────────────────────────────────────────────────── */
+
+.ai-confirm-card {
+  /* no margin-top — ai-actions-wrap already provides margin-top: 8px */
+  padding: 12px 14px;
+  background: rgba(220, 80, 50, 0.1);
+  border: 1px solid rgba(220, 80, 50, 0.22);
+  border-radius: 14px;
+  animation: confirmIn 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes confirmIn {
+  from { opacity: 0; transform: translateY(4px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ai-confirm-msg {
+  font-size: 12.5px;
+  color: var(--text);
+  margin-bottom: 10px;
+  line-height: 1.5;
+  font-weight: 500;
+}
+
+.ai-confirm-btns {
+  display: flex;
+  gap: 7px;
+}
+
+.ai-confirm-yes {
+  padding: 6px 16px;
+  background: #d94040;
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.ai-confirm-yes:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.ai-confirm-cancel {
+  padding: 6px 16px;
+  background: var(--surface-strong);
+  color: var(--text2);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.ai-confirm-cancel:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .toast {
