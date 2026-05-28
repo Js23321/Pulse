@@ -1,17 +1,82 @@
 const AI_CONFIG = {
   enabled: true,
   endpoint: "/api/ai",
-  model: "gemini-2.5-flash-lite",
-  personality: {
-    identity: "You are Pulse AI, a thoughtful personal productivity coach inside the Pulse app.",
-    tone: "Be warm, clear, calm, and practical. Sound encouraging without sounding cheesy.",
-    behavior: [
-      "Keep responses concise and actionable.",
-      "Prefer the next best step over long theory.",
-      "Notice momentum, patterns, and gentle accountability opportunities.",
-      "When the user seems overwhelmed, simplify and reduce the plan.",
-      "Use plain language and avoid sounding robotic."
-    ],
+  model: "gemini-2.0-flash",
+  personalities: {
+    fullscreen: {
+      identity: "You are Pulse AI, a thoughtful personal productivity coach inside the Pulse app.",
+      tone: "Be warm, clear, calm, and practical. Sound encouraging without sounding cheesy.",
+      behavior: [
+        "Keep responses concise and actionable.",
+        "Prefer the next best step over long theory.",
+        "Notice momentum, patterns, and gentle accountability opportunities.",
+        "When the user seems overwhelmed, simplify and reduce the plan.",
+        "Use plain language and avoid sounding robotic."
+      ],
+    },
+    defaultPage: {
+      identity: "You are Pulse AI, a focused in-page coach helping with the part of Pulse the user is viewing right now.",
+      tone: "Be concise, observant, and useful within the current page.",
+      behavior: [
+        "Answer using what is visible on the current page first.",
+        "Give one strong next step before offering extras.",
+        "Keep the response tight unless the user asks for more."
+      ],
+    },
+    habits: {
+      identity: "You are Pulse AI acting like a gentle accountability buddy for habits.",
+      tone: "Be encouraging, lightweight, and consistency-first.",
+      behavior: [
+        "Focus on streaks, friction, and easy repeatable next actions.",
+        "Do not overwhelm the user with big plans.",
+        "Celebrate momentum and make the next check-in feel easy."
+      ],
+    },
+    goals: {
+      identity: "You are Pulse AI acting like a founder coach for progress and execution.",
+      tone: "Be direct, strategic, and momentum-oriented.",
+      behavior: [
+        "Prioritize clarity, sequencing, and measurable progress.",
+        "Push toward the highest-leverage next step.",
+        "Keep the user moving instead of endlessly planning."
+      ],
+    },
+    workout: {
+      identity: "You are Pulse AI acting like a firm but supportive gym coach.",
+      tone: "Be disciplined, motivating, and clear.",
+      behavior: [
+        "Push for consistency, recovery, and good training decisions.",
+        "Use short, decisive guidance.",
+        "Encourage action, but do not glorify overtraining."
+      ],
+    },
+    study: {
+      identity: "You are Pulse AI acting like a gentle but sharp study planner.",
+      tone: "Be calm, structured, and reassuring.",
+      behavior: [
+        "Reduce overwhelm by chunking work into small sessions.",
+        "Encourage focus, revision, and realistic planning.",
+        "Help the user choose the next study block with minimal friction."
+      ],
+    },
+    notes: {
+      identity: "You are Pulse AI acting like a reflective thinking partner for notes and notebook work.",
+      tone: "Be clear, organized, and lightly reflective.",
+      behavior: [
+        "Summarize patterns and pull out useful next actions.",
+        "Help turn messy notes into direction.",
+        "Stay practical instead of poetic."
+      ],
+    },
+    dashboard: {
+      identity: "You are Pulse AI acting like a calm daily coach for the user's overall momentum.",
+      tone: "Be balanced, concise, and encouraging.",
+      behavior: [
+        "Scan across habits, goals, and notes for the clearest next move.",
+        "Keep advice grounded in today's progress.",
+        "Favor momentum over perfection."
+      ],
+    },
   },
 };
 
@@ -91,6 +156,11 @@ let lastDashboardRingOffset = null;
 let firebaseClient = null;
 let firebaseAuthReady = null;
 let saveTimer = null;
+let remoteStateUnsub = null;
+let lastRemoteStateJSON = "";
+let studyTimerTick = null;
+let workoutTimerTick = null;
+let pomodoroTimerTick = null;
 
 const PAGE_TITLES = {
   dashboard: "Home",
@@ -133,6 +203,35 @@ function defaultState() {
     habits: [],
     goals: [],
     notes: [],
+    tools: {
+      studyTimer: {
+        duration: 25,
+        remaining: 25 * 60,
+        running: false,
+      },
+      workoutTimer: {
+        running: false,
+        currentIndex: 0,
+        phase: "work",
+        remaining: 45,
+        exercises: [
+          { name: "Warm-up", work: 300, rest: 30 },
+          { name: "Main set", work: 45, rest: 60 },
+          { name: "Cooldown", work: 180, rest: 0 },
+        ],
+      },
+      pomodoroTimer: {
+        duration: 25,
+        shortBreak: 5,
+        longBreak: 15,
+        sessionsBeforeLong: 4,
+        phase: "work",
+        remaining: 25 * 60,
+        completed: 0,
+        running: false,
+      },
+      studyChecklist: [],
+    },
     settings: {
       name: "",
       theme: "light",
@@ -184,6 +283,43 @@ function migrateState(state) {
     habits: state.habits || [],
     goals: state.goals || [],
     notes,
+    tools: {
+      studyTimer: {
+        duration: Math.max(1, Number(state.tools?.studyTimer?.duration) || 25),
+        remaining: Math.max(1, Number(state.tools?.studyTimer?.remaining) || ((Number(state.tools?.studyTimer?.duration) || 25) * 60)),
+        running: Boolean(state.tools?.studyTimer?.running),
+      },
+      workoutTimer: {
+        running: Boolean(state.tools?.workoutTimer?.running),
+        currentIndex: Math.max(0, Number(state.tools?.workoutTimer?.currentIndex) || 0),
+        phase: state.tools?.workoutTimer?.phase === "rest" ? "rest" : "work",
+        remaining: Math.max(1, Number(state.tools?.workoutTimer?.remaining) || 45),
+        exercises: Array.isArray(state.tools?.workoutTimer?.exercises) && state.tools.workoutTimer.exercises.length
+          ? state.tools.workoutTimer.exercises.map((exercise, index) => ({
+              name: String(exercise?.name || `Exercise ${index + 1}`),
+              work: Math.max(5, Number(exercise?.work) || 45),
+              rest: Math.max(0, Number(exercise?.rest) || 0),
+            }))
+          : defaultState().tools.workoutTimer.exercises,
+      },
+      pomodoroTimer: {
+        duration: Math.max(1, Number(state.tools?.pomodoroTimer?.duration) || 25),
+        shortBreak: Math.max(1, Number(state.tools?.pomodoroTimer?.shortBreak) || 5),
+        longBreak: Math.max(1, Number(state.tools?.pomodoroTimer?.longBreak) || 15),
+        sessionsBeforeLong: Math.max(1, Number(state.tools?.pomodoroTimer?.sessionsBeforeLong) || 4),
+        phase: ["work", "shortBreak", "longBreak"].includes(state.tools?.pomodoroTimer?.phase) ? state.tools.pomodoroTimer.phase : "work",
+        remaining: Math.max(1, Number(state.tools?.pomodoroTimer?.remaining) || 25 * 60),
+        completed: Math.max(0, Number(state.tools?.pomodoroTimer?.completed) || 0),
+        running: Boolean(state.tools?.pomodoroTimer?.running),
+      },
+      studyChecklist: Array.isArray(state.tools?.studyChecklist)
+        ? state.tools.studyChecklist.map((item) => ({
+            id: item.id || ("cl" + Date.now() + Math.random().toString(36).slice(2, 5)),
+            text: String(item.text || ""),
+            done: false,
+          }))
+        : [],
+    },
     settings: {
       name: state.settings?.name || "",
       theme: state.settings?.theme || "light",
@@ -233,6 +369,10 @@ function sanitizeStateForSave(state) {
   return JSON.parse(JSON.stringify(state));
 }
 
+function serializeState(state) {
+  return JSON.stringify(sanitizeStateForSave(state));
+}
+
 async function ensureFirebase() {
   if (!isFirebaseConfigured()) return null;
   if (firebaseClient) return firebaseClient;
@@ -260,18 +400,28 @@ async function loadRemoteState(uid) {
   if (!fb) return defaultState();
   const { doc, getDoc } = fb.dbApi;
   const snap = await getDoc(doc(fb.db, "pulseUsers", uid));
-  if (!snap.exists()) return defaultState();
-  return migrateState(snap.data()?.state || defaultState());
+  if (!snap.exists()) {
+    lastRemoteStateJSON = serializeState(defaultState());
+    return defaultState();
+  }
+  const nextState = migrateState(snap.data()?.state || defaultState());
+  lastRemoteStateJSON = serializeState(nextState);
+  return nextState;
 }
 
 async function saveRemoteStateNow() {
   const fb = await ensureFirebase();
   if (!fb || !currentUser) return;
   const { doc, setDoc, serverTimestamp } = fb.dbApi;
+  const cleanState = sanitizeStateForSave(S);
+  // Must match exactly what the snapshot handler computes:
+  // serializeState(migrateState(snap.data().state))
+  // so our own writes don't look like "changed" remote state and trigger rerenderPage()
+  lastRemoteStateJSON = serializeState(migrateState(cleanState));
   await setDoc(doc(fb.db, "pulseUsers", currentUser.uid), {
     email: currentUser.email || "",
     username: currentUser.username || "",
-    state: sanitizeStateForSave(S),
+    state: cleanState,
     updatedAt: serverTimestamp(),
   }, { merge: true });
 }
@@ -415,12 +565,33 @@ function firebaseAuthError(error) {
   }
 }
 
+function scrollToAuth(mode) {
+  const section = document.getElementById("landingAuth");
+  if (section) section.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (authMode !== mode) switchTab(mode);
+}
+
 function switchTab(mode) {
+  if (authMode === mode) return;
   authMode = mode;
   document.getElementById("tabIn").classList.toggle("active", mode === "in");
   document.getElementById("tabUp").classList.toggle("active", mode === "up");
   document.getElementById("authBtn").textContent = mode === "in" ? "Sign in" : "Create account";
   document.getElementById("authErr").classList.add("hidden");
+
+  const title = document.getElementById("authCardTitle");
+  const sub = document.getElementById("authCardSubText");
+  if (title) title.textContent = mode === "in" ? "Welcome back." : "Create your account.";
+  if (sub) sub.textContent = mode === "in" ? "Sign in to continue with Pulse." : "Join Pulse and start building momentum.";
+
+  const body = document.getElementById("authFormBody");
+  if (body) {
+    const dir = mode === "up" ? "slide-left" : "slide-right";
+    body.classList.remove("slide-left", "slide-right");
+    void body.offsetWidth;
+    body.classList.add(dir);
+    setTimeout(() => body.classList.remove("slide-left", "slide-right"), 300);
+  }
 }
 
 function togglePassVis() {
@@ -464,6 +635,7 @@ async function submitAuth() {
 
 function showAuth() {
   syncAuthUI();
+  document.getElementById("bootScreen").classList.add("hidden");
   document.getElementById("authScreen").classList.remove("hidden");
   document.getElementById("appWrap").classList.add("hidden");
   document.getElementById("mobNav").classList.add("hidden");
@@ -471,16 +643,25 @@ function showAuth() {
 
 function showApp() {
   syncAuthUI();
+  document.getElementById("bootScreen").classList.add("hidden");
   document.getElementById("authScreen").classList.add("hidden");
   document.getElementById("appWrap").classList.remove("hidden");
   document.getElementById("mobNav").classList.remove("hidden");
   applyTheme(S.settings.theme || "light");
   syncUserUI();
   nav("dashboard");
+  // Re-attach interval ticks for any timers that were running when state was loaded
+  if (getPomodoroTimer().running) startPomodoroTimerTick();
+  if (getWorkoutTimer().running) runWorkoutTimer();
+  if (getStudyTimer().running) runStudyTimer();
 }
 
 async function signOut() {
   clearPendingSave();
+  clearStudyTimerTick();
+  clearWorkoutTimerTick();
+  clearPomodoroTimerTick();
+  stopRemoteStateSync();
   if (isFirebaseConfigured()) {
     try {
       const fb = await ensureFirebase();
@@ -505,6 +686,57 @@ function syncUserUI() {
   document.getElementById("sidebarName").textContent = uname;
   document.getElementById("userAvatar").textContent = uname[0].toUpperCase();
   updateTopbarMeta();
+}
+
+function applyRemoteState(nextState) {
+  const serialized = serializeState(nextState);
+  if (serialized === lastRemoteStateJSON) return;
+  lastRemoteStateJSON = serialized;
+  S = migrateState(nextState);
+  if (!document.getElementById("appWrap").classList.contains("hidden")) {
+    syncUserUI();
+    rerenderPage();
+  }
+}
+
+function stopRemoteStateSync() {
+  if (remoteStateUnsub) {
+    remoteStateUnsub();
+    remoteStateUnsub = null;
+  }
+}
+
+async function startRemoteStateSync(uid) {
+  const fb = await ensureFirebase();
+  if (!fb) return null;
+  const { doc, onSnapshot } = fb.dbApi;
+  stopRemoteStateSync();
+
+  return new Promise((resolve) => {
+    let firstPass = true;
+    remoteStateUnsub = onSnapshot(doc(fb.db, "pulseUsers", uid), (snap) => {
+      const nextState = snap.exists() ? migrateState(snap.data()?.state || defaultState()) : defaultState();
+      const serialized = serializeState(nextState);
+      const changed = serialized !== lastRemoteStateJSON;
+      lastRemoteStateJSON = serialized;
+      S = nextState;
+
+      if (!firstPass && changed && !document.getElementById("appWrap").classList.contains("hidden")) {
+        syncUserUI();
+        rerenderPage();
+      }
+
+      if (firstPass) {
+        firstPass = false;
+        resolve(nextState);
+      }
+    }, () => {
+      if (firstPass) {
+        firstPass = false;
+        resolve(defaultState());
+      }
+    });
+  });
 }
 
 function updateTopbarMeta() {
@@ -578,8 +810,8 @@ function getNotebookDoc() {
 }
 
 function noteMatchesFilter(note) {
+  if (note.kind === "notebook_doc") return false; // always shown in the composer above
   if (noteFilter === "all") return true;
-  if (noteFilter === "notebook") return note.kind === "notebook_doc";
   return note.kind === noteFilter;
 }
 
@@ -598,6 +830,9 @@ function renderCurrentPage(animated = false) {
     document.getElementById("appWrap").classList.remove("ai-open");
   }
   animateDashboardRing();
+  syncStudyTimerUI();
+  syncWorkoutTimerUI();
+  syncPomodoroTimerUI();
   if (curPage === "ai") renderAIPageMsgs();
 }
 
@@ -629,6 +864,504 @@ function rerenderPage() {
   renderCurrentPage(false);
 }
 
+function fmtTimer(totalSeconds) {
+  const safe = Math.max(0, Math.floor(totalSeconds || 0));
+  const mins = Math.floor(safe / 60);
+  const secs = safe % 60;
+  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+}
+
+function getStudyTimer() {
+  if (!S.tools) S.tools = defaultState().tools;
+  if (!S.tools.studyTimer) S.tools.studyTimer = defaultState().tools.studyTimer;
+  return S.tools.studyTimer;
+}
+
+function getWorkoutTimer() {
+  if (!S.tools) S.tools = defaultState().tools;
+  if (!S.tools.workoutTimer) S.tools.workoutTimer = defaultState().tools.workoutTimer;
+  if (!Array.isArray(S.tools.workoutTimer.exercises) || !S.tools.workoutTimer.exercises.length) {
+    S.tools.workoutTimer.exercises = defaultState().tools.workoutTimer.exercises;
+  }
+  return S.tools.workoutTimer;
+}
+
+function syncStudyTimerUI() {
+  const timer = getStudyTimer();
+  const display = document.getElementById("studyTimerDisplay");
+  const status = document.getElementById("studyTimerStatus");
+  const button = document.getElementById("studyTimerToggle");
+  if (display) display.textContent = fmtTimer(timer.remaining);
+  if (status) status.textContent = timer.running ? "Focus session running" : `Next session: ${timer.duration} min`;
+  if (button) button.textContent = timer.running ? "Pause" : "Start";
+}
+
+function clearStudyTimerTick() {
+  if (studyTimerTick) {
+    clearInterval(studyTimerTick);
+    studyTimerTick = null;
+  }
+}
+
+function runStudyTimer() {
+  clearStudyTimerTick();
+  if (!getStudyTimer().running) return;
+  studyTimerTick = setInterval(() => {
+    const timer = getStudyTimer(); // fresh reference each tick
+    if (!timer.running) {
+      clearStudyTimerTick();
+      return;
+    }
+    timer.remaining = Math.max(0, timer.remaining - 1);
+    syncStudyTimerUI();
+    if (timer.remaining <= 0) {
+      timer.running = false;
+      clearStudyTimerTick();
+      save();
+      syncStudyTimerUI();
+      toast("Study session complete");
+    }
+  }, 1000);
+}
+
+function setStudyDuration(value) {
+  const timer = getStudyTimer();
+  const minutes = Math.max(1, Math.min(180, Number(value) || 25));
+  timer.duration = minutes;
+  if (!timer.running) timer.remaining = minutes * 60;
+  save();
+  syncStudyTimerUI();
+}
+
+function toggleStudyTimer() {
+  const timer = getStudyTimer();
+  timer.running = !timer.running;
+  if (timer.running && timer.remaining <= 0) timer.remaining = timer.duration * 60;
+  if (timer.running) runStudyTimer();
+  else clearStudyTimerTick();
+  syncStudyTimerUI();
+}
+
+function resetStudyTimer() {
+  const timer = getStudyTimer();
+  timer.running = false;
+  timer.remaining = timer.duration * 60;
+  clearStudyTimerTick();
+  syncStudyTimerUI();
+}
+
+function syncWorkoutTimerUI() {
+  const timer = getWorkoutTimer();
+  const current = timer.exercises[timer.currentIndex] || timer.exercises[0];
+  const display = document.getElementById("workoutTimerDisplay");
+  const status = document.getElementById("workoutTimerStatus");
+  const currentLabel = document.getElementById("workoutCurrentLabel");
+  const toggle = document.getElementById("workoutTimerToggle");
+  if (display) display.textContent = fmtTimer(timer.remaining);
+  if (status) status.textContent = timer.phase === "rest" ? "Rest interval" : "Work interval";
+  if (currentLabel) currentLabel.textContent = current ? `${current.name} · ${timer.phase}` : "No exercise selected";
+  if (toggle) toggle.textContent = timer.running ? "Pause" : "Start";
+}
+
+function clearWorkoutTimerTick() {
+  if (workoutTimerTick) {
+    clearInterval(workoutTimerTick);
+    workoutTimerTick = null;
+  }
+}
+
+function moveWorkoutTimerForward() {
+  const timer = getWorkoutTimer();
+  const current = timer.exercises[timer.currentIndex];
+  if (!current) {
+    timer.running = false;
+    clearWorkoutTimerTick();
+    syncWorkoutTimerUI();
+    return;
+  }
+
+  if (timer.phase === "work" && current.rest > 0) {
+    timer.phase = "rest";
+    timer.remaining = current.rest;
+    syncWorkoutTimerUI();
+    return;
+  }
+
+  if (timer.currentIndex < timer.exercises.length - 1) {
+    timer.currentIndex += 1;
+    timer.phase = "work";
+    timer.remaining = timer.exercises[timer.currentIndex].work;
+    syncWorkoutTimerUI();
+    return;
+  }
+
+  timer.running = false;
+  timer.phase = "work";
+  timer.currentIndex = 0;
+  timer.remaining = timer.exercises[0]?.work || 45;
+  clearWorkoutTimerTick();
+  syncWorkoutTimerUI();
+  toast("Workout timer complete");
+}
+
+function runWorkoutTimer() {
+  clearWorkoutTimerTick();
+  if (!getWorkoutTimer().running) return;
+  workoutTimerTick = setInterval(() => {
+    const timer = getWorkoutTimer(); // fresh reference each tick
+    if (!timer.running) {
+      clearWorkoutTimerTick();
+      return;
+    }
+    timer.remaining = Math.max(0, timer.remaining - 1);
+    syncWorkoutTimerUI();
+    if (timer.remaining <= 0) moveWorkoutTimerForward();
+  }, 1000);
+}
+
+function toggleWorkoutTimer() {
+  const timer = getWorkoutTimer();
+  timer.running = !timer.running;
+  if (timer.running) runWorkoutTimer();
+  else clearWorkoutTimerTick();
+  syncWorkoutTimerUI();
+}
+
+function resetWorkoutTimer() {
+  const timer = getWorkoutTimer();
+  timer.running = false;
+  timer.currentIndex = 0;
+  timer.phase = "work";
+  timer.remaining = timer.exercises[0]?.work || 45;
+  clearWorkoutTimerTick();
+  syncWorkoutTimerUI();
+}
+
+function nextWorkoutTimerStep() {
+  moveWorkoutTimerForward();
+}
+
+function addWorkoutExercise() {
+  const timer = getWorkoutTimer();
+  timer.exercises.push({ name: `Exercise ${timer.exercises.length + 1}`, work: 45, rest: 60 });
+  save();
+  rerenderPage();
+  // Animate only the newly added last row
+  const rows = document.querySelectorAll(".workspace-plan-row");
+  const lastRow = rows[rows.length - 1];
+  if (lastRow) lastRow.classList.add("row-added");
+}
+
+function removeWorkoutExercise(index) {
+  const timer = getWorkoutTimer();
+  if (timer.exercises.length <= 1) return toast("Keep at least one exercise");
+
+  const doRemove = () => {
+    timer.exercises.splice(index, 1);
+    timer.currentIndex = Math.min(timer.currentIndex, timer.exercises.length - 1);
+    const current = timer.exercises[timer.currentIndex];
+    timer.remaining = timer.phase === "rest" ? current.rest || 1 : current.work;
+    save();
+    rerenderPage();
+  };
+
+  const rows = document.querySelectorAll(".workspace-plan-row");
+  const row = rows[index];
+  if (row) {
+    row.classList.add("workout-row-removing");
+    setTimeout(doRemove, 220);
+  } else {
+    doRemove();
+  }
+}
+
+function updateWorkoutExercise(index, field, value) {
+  const timer = getWorkoutTimer();
+  const exercise = timer.exercises[index];
+  if (!exercise) return;
+  if (field === "name") {
+    exercise.name = value || `Exercise ${index + 1}`;
+  } else if (field === "work") {
+    exercise.work = Math.max(5, Number(value) || 45);
+  } else if (field === "rest") {
+    exercise.rest = Math.max(0, Number(value) || 0);
+  }
+
+  if (timer.currentIndex === index && timer.phase === "work" && !timer.running) timer.remaining = exercise.work;
+  if (timer.currentIndex === index && timer.phase === "rest" && !timer.running) timer.remaining = Math.max(1, exercise.rest || 1);
+  save();
+  syncWorkoutTimerUI();
+}
+
+function renderStudyTimerCard() {
+  const timer = getStudyTimer();
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="workspace-tool-head">
+        <div>
+          <div class="workspace-tool-title">Study timer</div>
+          <div class="workspace-tool-sub">Use a simple focus block to start work without negotiating with yourself.</div>
+        </div>
+        <div class="workspace-timer-display" id="studyTimerDisplay">${fmtTimer(timer.remaining)}</div>
+      </div>
+      <div class="workspace-tool-row">
+        <div class="workspace-tool-status" id="studyTimerStatus">${timer.running ? "Focus session running" : `Next session: ${timer.duration} min`}</div>
+        <div class="workspace-tool-actions">
+          <button class="btn btn-outline btn-sm" id="studyTimerToggle" onclick="toggleStudyTimer()">${timer.running ? "Pause" : "Start"}</button>
+          <button class="btn btn-ghost btn-sm" onclick="resetStudyTimer()">Reset</button>
+        </div>
+      </div>
+      <div class="workspace-tool-grid">
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Focus minutes</label>
+          <input class="form-input" type="number" min="1" max="180" value="${timer.duration}" onchange="setStudyDuration(this.value)">
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderWorkoutTimerCard() {
+  const timer = getWorkoutTimer();
+  const current = timer.exercises[timer.currentIndex] || timer.exercises[0];
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="workspace-tool-head">
+        <div>
+          <div class="workspace-tool-title">Workout timer</div>
+          <div class="workspace-tool-sub">Build a simple interval flow with exercise time and rest between sets.</div>
+        </div>
+        <div class="workspace-timer-display" id="workoutTimerDisplay">${fmtTimer(timer.remaining)}</div>
+      </div>
+      <div class="workspace-tool-row">
+        <div>
+          <div class="workspace-tool-status" id="workoutCurrentLabel">${current ? `${current.name} - ${timer.phase}` : "No exercise selected"}</div>
+          <div class="workspace-tool-meta" id="workoutTimerStatus">${timer.phase === "rest" ? "Rest interval" : "Work interval"}</div>
+        </div>
+        <div class="workspace-tool-actions">
+          <button class="btn btn-outline btn-sm" id="workoutTimerToggle" onclick="toggleWorkoutTimer()">${timer.running ? "Pause" : "Start"}</button>
+          <button class="btn btn-ghost btn-sm" onclick="nextWorkoutTimerStep()">Next</button>
+          <button class="btn btn-ghost btn-sm" onclick="resetWorkoutTimer()">Reset</button>
+        </div>
+      </div>
+      <div class="workspace-plan">
+        ${timer.exercises.map((exercise, index) => `
+          <div class="workspace-plan-row ${index === timer.currentIndex ? "active" : ""}">
+            <input class="form-input" value="${esc(exercise.name)}" oninput="updateWorkoutExercise(${index}, 'name', this.value)" placeholder="Exercise name">
+            <input class="form-input" type="number" min="5" step="5" value="${exercise.work}" oninput="updateWorkoutExercise(${index}, 'work', this.value)" placeholder="Work (sec)">
+            <input class="form-input" type="number" min="0" step="5" value="${exercise.rest}" oninput="updateWorkoutExercise(${index}, 'rest', this.value)" placeholder="Rest (sec)">
+            <button class="btn btn-ghost btn-icon btn-sm" onclick="removeWorkoutExercise(${index})" title="Remove">x</button>
+          </div>
+        `).join("")}
+      </div>
+      <div class="workspace-tool-actions" style="margin-top:14px">
+        <button class="btn btn-outline btn-sm" onclick="addWorkoutExercise()">+ Add exercise</button>
+      </div>
+    </div>
+  `;
+}
+
+function getPomodoroTimer() {
+  if (!S.tools) S.tools = defaultState().tools;
+  if (!S.tools.pomodoroTimer) S.tools.pomodoroTimer = defaultState().tools.pomodoroTimer;
+  return S.tools.pomodoroTimer;
+}
+
+function syncPomodoroTimerUI() {
+  const t = getPomodoroTimer();
+  const display = document.getElementById("pomodoroDisplay");
+  const status = document.getElementById("pomodoroStatus");
+  const btn = document.getElementById("pomodoroToggle");
+  const dotsEl = document.getElementById("pomodoroDots");
+  const phaseLabels = { work: "Focus", shortBreak: "Short break", longBreak: "Long break" };
+  if (display) display.textContent = fmtTimer(t.remaining);
+  if (status) status.textContent = phaseLabels[t.phase] || "Focus";
+  if (btn) btn.textContent = t.running ? "Pause" : "Start";
+  if (dotsEl) {
+    dotsEl.innerHTML = Array.from({ length: t.sessionsBeforeLong }, (_, i) =>
+      `<span class="pomo-dot${i < t.completed ? " done" : ""}"></span>`
+    ).join("");
+  }
+}
+
+function clearPomodoroTimerTick() {
+  if (pomodoroTimerTick) {
+    clearInterval(pomodoroTimerTick);
+    pomodoroTimerTick = null;
+  }
+}
+
+function startPomodoroTimerTick() {
+  clearPomodoroTimerTick();
+  if (!getPomodoroTimer().running) return;
+  pomodoroTimerTick = setInterval(() => {
+    // Always read fresh state so S replacements (e.g. from remote sync) are respected
+    const t = getPomodoroTimer();
+    if (!t.running) { clearPomodoroTimerTick(); return; }
+    t.remaining -= 1;
+    if (t.remaining <= 0) {
+      // Phase transition — advance to the next phase
+      if (t.phase === "work") {
+        t.completed += 1;
+        if (t.completed >= t.sessionsBeforeLong) {
+          t.phase = "longBreak";
+          t.remaining = t.longBreak * 60;
+        } else {
+          t.phase = "shortBreak";
+          t.remaining = t.shortBreak * 60;
+        }
+      } else {
+        if (t.phase === "longBreak") t.completed = 0;
+        t.phase = "work";
+        t.remaining = t.duration * 60;
+      }
+      // Only save on phase transitions, not every second — prevents Firestore
+      // snapshot storms that were replacing S and resetting running to false
+      save();
+    }
+    syncPomodoroTimerUI();
+  }, 1000);
+}
+
+function togglePomodoroTimer() {
+  const t = getPomodoroTimer();
+  t.running = !t.running;
+  save();
+  if (t.running) startPomodoroTimerTick();
+  else clearPomodoroTimerTick();
+  syncPomodoroTimerUI();
+}
+
+function resetPomodoroTimer() {
+  clearPomodoroTimerTick();
+  const t = getPomodoroTimer();
+  t.running = false;
+  t.phase = "work";
+  t.completed = 0;
+  t.remaining = t.duration * 60;
+  save();
+  syncPomodoroTimerUI();
+}
+
+// ── Study Checklist ──────────────────────────────────────────────────────────
+
+function getStudyChecklist() {
+  if (!S.tools.studyChecklist) S.tools.studyChecklist = [];
+  return S.tools.studyChecklist;
+}
+
+function addChecklistItem() {
+  const input = document.getElementById("checklistInput");
+  const text = (input?.value || "").trim();
+  if (!text) return;
+  const item = {
+    id: "cl" + Date.now() + Math.random().toString(36).slice(2, 5),
+    text,
+    done: false,
+  };
+  getStudyChecklist().push(item);
+  input.value = "";
+  input.focus();
+  save();
+  appendChecklistItem(item);
+}
+
+function appendChecklistItem(item) {
+  const container = document.getElementById("checklistItems");
+  if (!container) return;
+  const div = document.createElement("div");
+  div.className = "cl-item";
+  div.id = "cli-" + item.id;
+  div.innerHTML = `
+    <button class="cl-check" onclick="completeChecklistItem('${item.id}')" aria-label="Complete task">
+      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+        <path d="M2 6.5L5 9.5L11 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <span class="cl-text">${esc(item.text)}</span>
+  `;
+  // trigger entrance animation
+  requestAnimationFrame(() => div.classList.add("cl-item-in"));
+  container.appendChild(div);
+}
+
+function completeChecklistItem(id) {
+  const list = getStudyChecklist();
+  const el = document.getElementById("cli-" + id);
+  if (el) {
+    el.classList.add("cl-completing");
+    setTimeout(() => {
+      const idx = list.findIndex((i) => i.id === id);
+      if (idx !== -1) list.splice(idx, 1);
+      save();
+      el.remove();
+    }, 380);
+  }
+}
+
+function renderChecklistCard() {
+  const list = getStudyChecklist();
+  const items = list
+    .map(
+      (item) => `
+    <div class="cl-item" id="cli-${item.id}">
+      <button class="cl-check" onclick="completeChecklistItem('${item.id}')" aria-label="Complete task">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+          <path d="M2 6.5L5 9.5L11 3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <span class="cl-text">${esc(item.text)}</span>
+    </div>`
+    )
+    .join("");
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="workspace-tool-title">Study Checklist</div>
+      <div class="workspace-tool-sub">Track tasks for this session. Items disappear when checked off.</div>
+      <div class="cl-input-row">
+        <input
+          id="checklistInput"
+          class="form-input cl-input"
+          placeholder="Add a task…"
+          onkeydown="if(event.key==='Enter')addChecklistItem()"
+        />
+        <button class="btn btn-primary btn-sm" onclick="addChecklistItem()">Add</button>
+      </div>
+      <div class="cl-list" id="checklistItems">${items}</div>
+    </div>
+  `;
+}
+
+function renderPomodoroTimerCard() {
+  const t = getPomodoroTimer();
+  const phaseLabels = { work: "Focus", shortBreak: "Short break", longBreak: "Long break" };
+  const dots = Array.from({ length: t.sessionsBeforeLong }, (_, i) =>
+    `<span class="pomo-dot${i < t.completed ? " done" : ""}"></span>`
+  ).join("");
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="workspace-tool-head">
+        <div>
+          <div class="workspace-tool-title">Pomodoro</div>
+          <div class="workspace-tool-sub">Work in focused sprints with built-in breaks. ${t.sessionsBeforeLong} sessions then a long rest.</div>
+        </div>
+        <div class="workspace-timer-display" id="pomodoroDisplay">${fmtTimer(t.remaining)}</div>
+      </div>
+      <div class="workspace-tool-row">
+        <div>
+          <div class="workspace-tool-status" id="pomodoroStatus">${phaseLabels[t.phase] || "Focus"}</div>
+          <div class="workspace-tool-meta">Work ${t.duration}m · Break ${t.shortBreak}m · Long ${t.longBreak}m</div>
+        </div>
+        <div class="workspace-tool-actions">
+          <button class="btn btn-outline btn-sm" id="pomodoroToggle" onclick="togglePomodoroTimer()">${t.running ? "Pause" : "Start"}</button>
+          <button class="btn btn-ghost btn-sm" onclick="resetPomodoroTimer()">Reset</button>
+        </div>
+      </div>
+      <div class="pomo-dots" id="pomodoroDots">${dots}</div>
+    </div>
+  `;
+}
+
 function categoryWorkspacePage(categoryId) {
   const category = cat(categoryId);
   const habits = S.habits.filter((h) => h.category === categoryId);
@@ -636,6 +1369,7 @@ function categoryWorkspacePage(categoryId) {
   const activeGoals = goals.filter((g) => goalCur(g) < g.target);
   const completedGoals = goals.filter((g) => goalCur(g) >= g.target);
   const notes = activityNotes().filter((note) => note.category === categoryId);
+  const hasContent = habits.length || goals.length || notes.length;
   const doneToday = habits.filter((h) => h.logs && h.logs[getTodayStr()]).length;
   const totalTarget = activeGoals.reduce((sum, g) => sum + g.target, 0);
   const totalDone = activeGoals.reduce((sum, g) => sum + goalCur(g), 0);
@@ -643,18 +1377,13 @@ function categoryWorkspacePage(categoryId) {
   const latestNote = notes[0];
 
   return `
-    <div class="page-toolbar">
-      <div class="page-toolbar-copy">
-        <div class="section-title">${category.emoji} ${category.label} hub</div>
-        <div class="section-sub">Keep your ${category.label.toLowerCase()} habits, goals, and activity in one focused space without bouncing between pages.</div>
-      </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <button class="btn btn-outline" onclick="openAddHabit()">+ Add habit</button>
-        <button class="btn btn-primary" onclick="openAddGoal()">+ Add goal</button>
-      </div>
-    </div>
+    ${categoryId === "study" ? renderStudyTimerCard() : ""}
+    ${categoryId === "study" ? renderPomodoroTimerCard() : ""}
+    ${categoryId === "study" ? renderChecklistCard() : ""}
+    ${categoryId === "workout" ? renderWorkoutTimerCard() : ""}
 
-    <div class="dash-stats" style="margin-top:0;margin-bottom:18px">
+    ${hasContent ? `
+    <div class="dash-stats" style="margin-top:16px;margin-bottom:0">
       <div class="dash-stat">
         <div class="dash-stat-kicker">Today's habits</div>
         <div class="dash-stat-line">
@@ -677,66 +1406,43 @@ function categoryWorkspacePage(categoryId) {
         </div>
       </div>
     </div>
+    ` : ""}
 
-    ${
-      habits.length
-        ? `
-      <div class="page-section">
-        <div class="sec-hd">
-          <div class="sec-label">${category.label} habits</div>
-          <button class="sec-action" onclick="nav('habits')">Open all habits</button>
+    ${habits.length ? `
+    <div class="page-section">
+      <div class="sec-hd">
+        <div class="sec-label">${category.label} habits</div>
+        <button class="sec-action" onclick="nav('habits')">All habits</button>
+      </div>
+      ${habits.map((h) => habitRow(h, false)).join("")}
+    </div>
+    ` : ""}
+
+    ${activeGoals.length || completedGoals.length ? `
+    <div class="page-section">
+      <div class="sec-hd">
+        <div class="sec-label">${category.label} goals</div>
+        <button class="sec-action" onclick="nav('goals')">All goals</button>
+      </div>
+      ${activeGoals.length ? `<div class="grid2">${activeGoals.map((g) => goalCard(g)).join("")}</div>` : ""}
+      ${completedGoals.length ? `
+        <div class="page-section">
+          <div class="sec-hd"><div class="sec-label">Completed</div></div>
+          <div class="grid2">${completedGoals.map((g) => goalCard(g)).join("")}</div>
         </div>
-        ${habits.map((h) => habitRow(h, false)).join("")}
-      </div>
-    `
-        : `
-      <div class="empty" style="margin-bottom:18px">
-        <div class="empty-icon">${category.emoji}</div>
-        <div class="empty-title">No ${category.label.toLowerCase()} habits yet</div>
-        <div class="empty-text">Add a small repeatable habit to make this page feel alive right away.</div>
-      </div>
-    `
-    }
+      ` : ""}
+    </div>
+    ` : ""}
 
-    ${
-      activeGoals.length || completedGoals.length
-        ? `
-      <div class="page-section">
-        <div class="sec-hd">
-          <div class="sec-label">${category.label} goals</div>
-          <button class="sec-action" onclick="nav('goals')">Open all goals</button>
-        </div>
-        ${activeGoals.length ? `<div class="grid2">${activeGoals.map((g) => goalCard(g)).join("")}</div>` : ""}
-        ${completedGoals.length ? `
-          <div class="page-section">
-            <div class="sec-hd">
-              <div class="sec-label">Completed</div>
-            </div>
-            <div class="grid2">${completedGoals.map((g) => goalCard(g)).join("")}</div>
-          </div>
-        ` : ""}
-      </div>
-    `
-        : `
-      <div class="empty" style="margin-bottom:18px">
-        <div class="empty-icon">+</div>
-        <div class="empty-title">No ${category.label.toLowerCase()} goals yet</div>
-        <div class="empty-text">Create a measurable target here and this workspace will start telling a clearer story.</div>
-      </div>
-    `
-    }
-
+    ${notes.length ? `
     <div class="page-section">
       <div class="sec-hd">
         <div class="sec-label">${category.label} activity</div>
         <button class="sec-action" onclick="nav('notes')">Open notes</button>
       </div>
-      ${
-        notes.length
-          ? `<div class="notes-stack">${notes.slice(0, 6).map((n) => noteRow(n)).join("")}</div>`
-          : `<div class="empty"><div class="empty-icon">✎</div><div class="empty-title">No ${category.label.toLowerCase()} activity yet</div><div class="empty-text">Complete a goal and add a quick note to build a useful history here.</div></div>`
-      }
+      <div class="notes-stack">${notes.slice(0, 6).map((n) => noteRow(n)).join("")}</div>
     </div>
+    ` : ""}
   `;
 }
 
@@ -757,6 +1463,13 @@ const PAGES = {
     const nextHabit = S.habits.find((h) => !(h.logs && h.logs[getTodayStr()]));
     const latestNote = notebook.content.trim();
     const focusLabel = pct >= 80 ? "Strong rhythm today" : pct >= 40 ? "Solid momentum building" : "A fresh start still counts";
+    const aiCoachCopy = nextHabit
+      ? `${Math.max(total - doneToday, 0)} habits are still open today. Start with ${nextHabit.name} and use Pulse AI if you want help sequencing the rest.`
+      : activeGoals[0]
+        ? `Your habit list is clear today. Pulse AI can help you choose the smartest next push on ${activeGoals[0].name}.`
+        : latestNote
+          ? "Pulse AI can turn your notes into one realistic next step if you're not sure what to tackle next."
+          : "Use Pulse AI when you want a quick reset, a realistic next step, or a short recap across everything in Pulse.";
 
     const r = 28;
     const circ = 2 * Math.PI * r;
@@ -888,7 +1601,7 @@ const PAGES = {
         <aside class="dash-side">
           <div class="dash-side-card">
             <div class="dash-side-title">Pulse AI</div>
-            <div class="dash-side-copy">Best placement: top bar on desktop and bottom navigation on mobile. That keeps it close without repeating headers or crowding the page.</div>
+            <div class="dash-side-copy">${esc(aiCoachCopy)}</div>
             <div class="dash-side-list">
               <div class="dash-mini-row">
                 <div>
@@ -1019,8 +1732,6 @@ const PAGES = {
 
     return `
       <div class="notebook-composer surface-card">
-        <div class="notebook-composer-title">Notebook</div>
-        <div class="notebook-composer-sub">This stays as one continuous note. Edit it, close the app, come back another day, and keep writing in the same place.</div>
         <div class="form-group" style="margin-bottom:0">
           <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing in your notebook...">${esc(notebook.content || "")}</textarea>
         </div>
@@ -1034,11 +1745,6 @@ const PAGES = {
         <input class="search-input" type="text" placeholder="Search notebook and activity notes..." value="${esc(noteSearch)}" oninput="noteSearch=this.value;rerenderPage()">
       </div>
 
-      <div class="filter-pills">
-        <div class="fpill ${noteFilter === "all" ? "active" : ""}" onclick="setNoteFilter('all')">All</div>
-        <div class="fpill ${noteFilter === "notebook" ? "active" : ""}" onclick="setNoteFilter('notebook')">Notebook ${notebookCount}</div>
-        <div class="fpill ${noteFilter === "activity" ? "active" : ""}" onclick="setNoteFilter('activity')">Activity ${activityCount}</div>
-      </div>
 
       ${
         visible.length
@@ -1068,7 +1774,7 @@ function habitRow(habit, dashMode) {
   const streak = habitStreak(habit);
   const c = cat(habit.category);
   return `
-    <div class="habit-item ${done ? "done" : ""}">
+    <div class="habit-item ${done ? "done" : ""}" data-habit-id="${habit.id}">
       <div
         class="hcheck ${done ? "checked" : ""}"
         style="${done ? `background:${c.color};border-color:${c.color}` : ""}"
@@ -1109,7 +1815,7 @@ function goalCard(goal) {
   const c = cat(goal.category);
   const done = cur >= goal.target;
   return `
-    <div class="goal-card ${done ? "done-card" : ""}">
+    <div class="goal-card ${done ? "done-card" : ""}" data-goal-id="${goal.id}">
       <div class="goal-top">
         <div style="min-width:0">
           <div class="goal-emoji">${goal.icon}</div>
@@ -1168,15 +1874,48 @@ function toggleHabit(id) {
   if (!habit) return;
   if (!habit.logs) habit.logs = {};
   const today = getTodayStr();
-  if (habit.logs[today]) {
+  const wasDone = !!habit.logs[today];
+  if (wasDone) {
     delete habit.logs[today];
     toast("Unchecked");
   } else {
     habit.logs[today] = true;
-    toast("Habit done");
+    toast("Habit done ✓");
   }
   save();
-  rerenderPage();
+
+  // Targeted DOM update — avoids full re-render which causes the double hover-lift flash
+  const el = document.querySelector(`.habit-item[data-habit-id="${id}"]`);
+  if (el) {
+    const done = !wasDone;
+    const c = cat(habit.category);
+    el.classList.toggle("done", done);
+    const check = el.querySelector(".hcheck");
+    if (check) {
+      check.className = `hcheck${done ? " checked" : ""}`;
+      check.style.cssText = done ? `background:${c.color};border-color:${c.color}` : "";
+      check.textContent = done ? "✓" : "";
+      check.title = done ? "Mark undone" : "Mark done";
+      // Fire the pop animation once when checking — remove the class after it finishes
+      // so it doesn't replay on subsequent re-renders
+      if (done) {
+        check.classList.add("check-pop");
+        setTimeout(() => check.classList.remove("check-pop"), 320);
+      }
+    }
+    // Update streak chip
+    const meta = el.querySelector(".habit-meta");
+    if (meta) {
+      const existing = meta.querySelector(".streak-chip");
+      if (existing) existing.remove();
+      const streak = habitStreak(habit);
+      if (streak > 0) meta.insertAdjacentHTML("beforeend", `<span class="streak-chip">${streak} day streak</span>`);
+    }
+    // Dashboard ring still needs a re-render for the progress circle
+    if (curPage === "dashboard") rerenderPage();
+  } else {
+    rerenderPage();
+  }
 }
 
 function openAddHabit() {
@@ -1306,7 +2045,8 @@ function submitLog(id) {
     if (note) {
       addActivityNote(goal, note);
       rerenderPage();
-      toast("Goal completed");
+      toast("🎉 Goal completed!");
+      finalizeCompletedGoal(goal.id);
     } else {
       openCompletionNote(goal.id);
     }
@@ -1326,16 +2066,17 @@ function openCompletionNote(goalId) {
       <textarea id="completionNoteBody" class="form-input" placeholder="Write a quick reflection about completing ${esc(goal.name)}"></textarea>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-outline" onclick="skipCompletionNote()">Skip</button>
+      <button class="btn btn-outline" onclick="skipCompletionNote('${goal.id}')">Skip</button>
       <button class="btn btn-primary" onclick="saveCompletionNote('${goal.id}')">Save note</button>
     </div>
   `);
 }
 
-function skipCompletionNote() {
+function skipCompletionNote(goalId) {
   closeModal();
   rerenderPage();
-  toast("Goal completed");
+  toast("🎉 Goal completed!");
+  if (goalId) finalizeCompletedGoal(goalId);
 }
 
 function saveCompletionNote(goalId) {
@@ -1346,7 +2087,21 @@ function saveCompletionNote(goalId) {
   save();
   closeModal();
   rerenderPage();
-  toast("Goal completed");
+  toast("🎉 Goal completed!");
+  finalizeCompletedGoal(goalId);
+}
+
+function finalizeCompletedGoal(goalId) {
+  const card = document.querySelector(`.goal-card[data-goal-id="${goalId}"]`);
+  if (card) {
+    card.classList.add("goal-removing");
+  }
+  setTimeout(() => {
+    const idx = S.goals.findIndex((g) => g.id === goalId);
+    if (idx !== -1) S.goals.splice(idx, 1);
+    save();
+    rerenderPage();
+  }, 420);
 }
 
 function addActivityNote(goal, content) {
@@ -1549,7 +2304,10 @@ function getAIConfig() {
 
 function buildAISystemPrompt(scope) {
   const config = getAIConfig();
-  const personality = config?.personality || {};
+  const personalities = config?.personalities || {};
+  const personality = scope === "global"
+    ? (personalities.fullscreen || {})
+    : (personalities[curPage] || personalities.defaultPage || personalities.fullscreen || {});
   const rules = Array.isArray(personality.behavior) ? personality.behavior.map((rule) => `- ${rule}`).join("\n") : "";
   return [
     personality.identity || "You are Pulse AI.",
@@ -1745,11 +2503,13 @@ async function initFirebaseAuth() {
       clearPendingSave();
       if (user) {
         currentUser = mapFirebaseUser(user);
-        S = await loadRemoteState(user.uid);
+        S = await startRemoteStateSync(user.uid);
         showApp();
       } else {
+        stopRemoteStateSync();
         currentUser = null;
         S = defaultState();
+        lastRemoteStateJSON = "";
         aiOpen = false;
         document.getElementById("aiPanel").classList.remove("open");
         document.getElementById("appWrap").classList.remove("ai-open");

@@ -8,51 +8,199 @@
 </head>
 <body>
 
-<div id="authScreen">
-  <div class="auth-shell">
-    <div class="auth-intro">
-      <div class="auth-badge">Pulse AI inside</div>
-      <h1>Build quiet momentum with Pulse.</h1>
-      <p>Track habits, goals, workouts, coding, study, and notes in one calm daily workspace.</p>
-      <div class="auth-points">
-        <div class="auth-point">
-          <span>Daily habits</span>
-          <strong>Check in once, keep your streaks visible.</strong>
+<div id="bootScreen">
+  <div class="boot-card">
+    <div class="auth-logo">pulse<span>.</span></div>
+    <p class="auth-sub">Loading your workspace...</p>
+  </div>
+</div>
+
+<div id="authScreen" class="hidden">
+
+  <!-- Sticky nav -->
+  <nav class="landing-nav">
+    <div class="landing-nav-inner">
+      <div class="landing-logo">pulse<span>.</span></div>
+      <div class="landing-nav-links">
+        <span class="landing-nav-link" onclick="document.getElementById('landingFeatures').scrollIntoView({behavior:'smooth'})">Features</span>
+        <span class="landing-nav-link" onclick="document.getElementById('landingHow').scrollIntoView({behavior:'smooth'})">How it works</span>
+        <span class="landing-nav-link" onclick="scrollToAuth('in')">Sign in</span>
+      </div>
+      <div class="landing-nav-cta">
+        <button class="btn btn-ghost btn-sm" onclick="scrollToAuth('in')">Sign in</button>
+        <button class="btn btn-primary btn-sm" onclick="scrollToAuth('up')">Get started free</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ① HERO -->
+  <section class="landing-hero">
+    <div class="landing-hero-inner">
+      <div class="auth-eyebrow">
+        <svg width="11" height="11" viewBox="0 0 20 20" fill="currentColor"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
+        Your personal operating system
+      </div>
+      <h1>Build quiet <span class="h1-highlight">momentum,</span><br>every single day.</h1>
+      <p class="landing-hero-desc">Habits, goals, workouts, study sessions, and AI coaching — one focused workspace that keeps you moving without the noise.</p>
+      <div class="landing-hero-cta">
+        <button class="btn btn-primary btn-lg" onclick="scrollToAuth('up')">Get started free</button>
+        <button class="btn btn-ghost btn-lg" onclick="scrollToAuth('in')">Sign in →</button>
+      </div>
+      <div class="landing-hero-stats">
+        <div class="landing-hero-stat"><span class="lhs-val">6+</span> modules</div>
+        <div class="landing-hero-sep"></div>
+        <div class="landing-hero-stat"><span class="lhs-val">Free</span> forever</div>
+        <div class="landing-hero-sep"></div>
+        <div class="landing-hero-stat"><span class="lhs-val">AI</span> built-in</div>
+        <div class="landing-hero-sep"></div>
+        <div class="landing-hero-stat"><span class="lhs-val">&#9729;</span> cloud sync</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ② FEATURES -->
+  <section class="landing-section" id="landingFeatures">
+    <div class="landing-section-inner">
+      <div class="landing-section-hd">
+        <div class="landing-section-eyebrow">Features</div>
+        <h2 class="landing-section-title">Everything you need to stay on track</h2>
+        <p class="landing-section-desc">Six purpose-built modules that work together as a single system for your daily growth.</p>
+      </div>
+      <div class="landing-feat-grid">
+        <div class="landing-feat-card">
+          <div class="landing-feat-ic">
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+          </div>
+          <div>
+            <div class="landing-feat-label">Habit streaks</div>
+            <div class="landing-feat-desc">Daily check-ins with streak tracking to build consistent, lasting routines.</div>
+          </div>
         </div>
-        <div class="auth-point">
-          <span>Incremental goals</span>
-          <strong>Log progress for workouts, coding, and study without clutter.</strong>
+        <div class="landing-feat-card">
+          <div class="landing-feat-ic">
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+          </div>
+          <div>
+            <div class="landing-feat-label">Measurable goals</div>
+            <div class="landing-feat-desc">Set numeric targets and log progress entries step by step over time.</div>
+          </div>
         </div>
-        <div class="auth-point">
-          <span>Pulse AI</span>
-          <strong>Keep coaching nearby in the top bar and mobile nav.</strong>
+        <div class="landing-feat-card">
+          <div class="landing-feat-ic">
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+          </div>
+          <div>
+            <div class="landing-feat-label">Focus timers</div>
+            <div class="landing-feat-desc">Pomodoro cycles, deep-work study blocks, and timed workout intervals.</div>
+          </div>
+        </div>
+        <div class="landing-feat-card">
+          <div class="landing-feat-ic landing-feat-ic--accent">
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="currentColor"><path d="M2 5a2 2 0 012-2h7a2 2 0 012 2v4a2 2 0 01-2 2H9l-3 3v-3H4a2 2 0 01-2-2V5z"/><path d="M15 7v2a4 4 0 01-4 4H9.828l-1.766 1.767c.28.149.599.233.938.233h2l3 3v-3h2a2 2 0 002-2V9a2 2 0 00-2-2h-1z"/></svg>
+          </div>
+          <div>
+            <div class="landing-feat-label">Pulse AI</div>
+            <div class="landing-feat-desc">Page-aware coaching that reads your current data — not a generic chatbot.</div>
+          </div>
+        </div>
+        <div class="landing-feat-card">
+          <div class="landing-feat-ic">
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
+          </div>
+          <div>
+            <div class="landing-feat-label">Activity notes</div>
+            <div class="landing-feat-desc">Rich notes attached directly to workouts, study sessions, and completed goals.</div>
+          </div>
+        </div>
+        <div class="landing-feat-card">
+          <div class="landing-feat-ic">
+            <svg width="17" height="17" viewBox="0 0 20 20" fill="currentColor"><path d="M5.5 16a3.5 3.5 0 01-.369-6.98 4 4 0 117.753-1.977A4.5 4.5 0 1113.5 16h-8z"/></svg>
+          </div>
+          <div>
+            <div class="landing-feat-label">Cloud sync</div>
+            <div class="landing-feat-desc">Your habits, goals, and notes sync instantly across every device you own.</div>
+          </div>
         </div>
       </div>
     </div>
+  </section>
 
+  <!-- ③ HOW IT WORKS -->
+  <section class="landing-section landing-how" id="landingHow">
+    <div class="landing-section-inner">
+      <div class="landing-section-hd">
+        <div class="landing-section-eyebrow">How it works</div>
+        <h2 class="landing-section-title">Up and running in minutes</h2>
+        <p class="landing-section-desc">No setup friction, no integrations to configure. Just open it and start.</p>
+      </div>
+      <div class="landing-steps-row">
+        <div class="landing-step-card">
+          <div class="landing-step-num">1</div>
+          <div>
+            <div class="landing-step-title">Create your free account</div>
+            <div class="landing-step-desc">Sign up with email in seconds. No credit card, no onboarding call required.</div>
+          </div>
+        </div>
+        <div class="landing-step-card">
+          <div class="landing-step-num">2</div>
+          <div>
+            <div class="landing-step-title">Add habits, goals &amp; routines</div>
+            <div class="landing-step-desc">Build your personal operating system across all six modules from day one.</div>
+          </div>
+        </div>
+        <div class="landing-step-card">
+          <div class="landing-step-num">3</div>
+          <div>
+            <div class="landing-step-title">Ask Pulse AI anything</div>
+            <div class="landing-step-desc">Get coaching that understands your data on every page — not generic advice.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ④ AUTH -->
+  <section class="landing-auth-wrap" id="landingAuth">
+    <div class="landing-auth-hd">
+      <h2>Ready to build <span class="h1-highlight">momentum?</span></h2>
+      <p>Join Pulse and start your first habit today — completely free.</p>
+    </div>
     <div class="auth-card">
-      <div class="auth-logo">pulse<span>.</span></div>
-      <p class="auth-sub">A premium daily tracker for habits, goals, and reflection.</p>
+      <div class="auth-card-hd">
+        <div class="auth-card-title" id="authCardTitle">Welcome back.</div>
+        <div class="auth-card-sub-text" id="authCardSubText">Sign in to continue with Pulse.</div>
+      </div>
       <div class="auth-toggle">
         <button class="auth-tab active" id="tabIn" onclick="switchTab('in')">Sign in</button>
         <button class="auth-tab" id="tabUp" onclick="switchTab('up')">Create account</button>
       </div>
-      <div class="form-group">
-        <label class="form-label" id="authUserLabel">Username</label>
-        <input id="authUser" class="form-input" type="text" placeholder="username" autocomplete="username" autocapitalize="none" onkeydown="if(event.key==='Enter')submitAuth()"/>
+      <div class="auth-form-body" id="authFormBody">
+        <div class="form-group">
+          <label class="form-label" id="authUserLabel">Email</label>
+          <input id="authUser" class="form-input" type="text" placeholder="name@example.com" autocomplete="username" autocapitalize="none" onkeydown="if(event.key==='Enter')submitAuth()"/>
+        </div>
+        <div class="form-group" style="position:relative">
+          <label class="form-label">Password</label>
+          <input id="authPass" class="form-input" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')submitAuth()"/>
+          <button class="pass-toggle" onclick="togglePassVis()" id="passToggle" type="button">
+            <svg id="eyeIcon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 10s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z"/><circle cx="10" cy="10" r="3"/></svg>
+          </button>
+        </div>
+        <div id="authErr" class="auth-err hidden"></div>
+        <button class="btn btn-primary" id="authBtn" style="width:100%;justify-content:center;margin-top:4px" onclick="submitAuth()">Sign in</button>
+        <p class="auth-foot" id="authFoot">Accounts are stored on this device for now, so you can start using Pulse right away.</p>
       </div>
-      <div class="form-group" style="position:relative">
-        <label class="form-label">Password</label>
-        <input id="authPass" class="form-input" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')submitAuth()"/>
-        <button class="pass-toggle" onclick="togglePassVis()" id="passToggle" type="button">
-          <svg id="eyeIcon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 10s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z"/><circle cx="10" cy="10" r="3"/></svg>
-        </button>
-      </div>
-      <div id="authErr" class="auth-err hidden"></div>
-      <button class="btn btn-primary" id="authBtn" style="width:100%;justify-content:center;margin-top:4px" onclick="submitAuth()">Sign in</button>
-      <p class="auth-foot" id="authFoot">Accounts are stored on this device for now, so you can start using Pulse right away.</p>
     </div>
-  </div>
+  </section>
+
+  <!-- ⑤ FOOTER -->
+  <footer class="landing-footer">
+    <div class="landing-footer-inner">
+      <div class="landing-footer-logo">pulse<span>.</span></div>
+      <div class="landing-footer-copy">&#169; 2026 Pulse &middot; Free personal tracker &middot; No ads, no subscriptions.</div>
+    </div>
+  </footer>
+
 </div>
 
 <div id="appWrap" class="app hidden">
