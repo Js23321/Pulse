@@ -568,17 +568,8 @@ async function doSignUp(username, pw) {
           throw new Error(data.error || "send-verification returned no error");
         }
       } catch (e) {
-        // Fallback: use Firebase's built-in sender
         emailError = e?.message || String(e);
-        console.warn("Resend fallback — trying Firebase built-in:", emailError);
-        try {
-          await fb.authApi.sendEmailVerification(cred.user);
-          emailSent = true;
-          emailError = null;
-        } catch (e2) {
-          emailError = e2?.message || String(e2);
-          console.error("Both verification senders failed:", emailError);
-        }
+        console.error("Verification email failed:", emailError);
       }
       return { uid: cred.user.uid, username: cred.user.email || clean, email: cred.user.email || clean, needsVerification: true, emailSent, emailError };
     } catch (error) {
@@ -789,14 +780,8 @@ async function resendVerification() {
     } else {
       throw new Error(data.error || "Failed");
     }
-  } catch (e) {
-    // Fallback to Firebase built-in if the API endpoint fails
-    try {
-      await fb.authApi.sendEmailVerification(user);
-      toast("Verification email resent — check your inbox");
-    } catch {
-      toast("Could not resend — try again in a minute");
-    }
+  } catch {
+    toast("Could not resend — try again in a minute");
   }
 }
 
