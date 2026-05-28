@@ -1,7 +1,7 @@
 const AI_CONFIG = {
   enabled: true,
   endpoint: "/api/ai",
-  model: "gemini-2.0-flash",
+  model: "gemini-2.0-flash-lite",
   personalities: {
     fullscreen: {
       identity: "You are Pulse AI, a thoughtful personal productivity coach inside the Pulse app.",
