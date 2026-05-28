@@ -188,12 +188,15 @@
           <label class="form-label" id="authUserLabel">Email</label>
           <input id="authUser" class="form-input" type="text" placeholder="name@example.com" autocomplete="username" autocapitalize="none" onkeydown="if(event.key==='Enter')submitAuth()"/>
         </div>
-        <div class="form-group" style="position:relative">
+        <div class="form-group" style="position:relative" id="authPassGroup">
           <label class="form-label">Password</label>
           <input id="authPass" class="form-input" type="password" placeholder="Password" autocomplete="current-password" onkeydown="if(event.key==='Enter')submitAuth()"/>
           <button class="pass-toggle" onclick="togglePassVis()" id="passToggle" type="button">
             <svg id="eyeIcon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 10s3.5-7 9-7 9 7 9 7-3.5 7-9 7-9-7-9-7z"/><circle cx="10" cy="10" r="3"/></svg>
           </button>
+        </div>
+        <div id="forgotPassWrap" style="text-align:right;margin-top:-6px;margin-bottom:10px">
+          <button type="button" style="background:none;border:none;cursor:pointer;font-size:12px;font-weight:700;color:var(--accent-text);padding:0" onclick="showForgotPassword()">Forgot password?</button>
         </div>
         <div id="authErr" class="auth-err hidden"></div>
         <button class="btn btn-primary" id="authBtn" style="width:100%;justify-content:center;margin-top:4px" onclick="submitAuth()">Sign in</button>

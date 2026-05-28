@@ -1245,6 +1245,296 @@ button {
   flex-wrap: wrap;
 }
 
+/* ── Page Hero ─────────────────────────────────────────────────────────────── */
+.page-hero {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(20px);
+  border-radius: 28px;
+  padding: 22px 24px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.page-hero-accent {
+  width: 4px;
+  min-height: 52px;
+  border-radius: 99px;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+.page-hero-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.page-hero-kicker {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text3);
+  margin-bottom: 8px;
+}
+
+.page-hero-num {
+  font-size: clamp(30px, 4vw, 42px);
+  font-weight: 800;
+  letter-spacing: -0.055em;
+  line-height: 1;
+}
+
+.page-hero-num-denom {
+  font-size: 0.52em;
+  font-weight: 700;
+  color: var(--text2);
+  letter-spacing: -0.02em;
+}
+
+.page-hero-sub {
+  font-size: 14px;
+  color: var(--text2);
+  margin-top: 8px;
+  line-height: 1.5;
+}
+
+.page-hero-bar {
+  height: 4px;
+  border-radius: 99px;
+  background: var(--border);
+  margin-top: 14px;
+  max-width: 260px;
+  overflow: hidden;
+}
+
+.page-hero-bar-fill {
+  height: 100%;
+  border-radius: 99px;
+  transition: width 0.6s cubic-bezier(.17,.67,.44,.99);
+}
+
+.page-hero-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.page-kpi-row {
+  display: flex;
+  gap: 10px;
+}
+
+.page-kpi {
+  padding: 11px 14px;
+  border-radius: 14px;
+  background: var(--surface-strong);
+  border: 1px solid var(--border);
+  text-align: center;
+  min-width: 64px;
+}
+
+.page-kpi-val {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 1;
+}
+
+.page-kpi-label {
+  font-size: 11px;
+  color: var(--text3);
+  margin-top: 4px;
+  white-space: nowrap;
+}
+
+/* ── Category hero (Workout / Study) ────────────────────────────────────────── */
+.cat-hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(20px);
+  border-radius: 24px;
+  margin-bottom: 20px;
+  border-left: 4px solid var(--cat-color);
+}
+
+.cat-hero-icon {
+  font-size: 30px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.cat-hero-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.cat-hero-title {
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.cat-hero-sub {
+  font-size: 13px;
+  color: var(--text2);
+  margin-top: 5px;
+}
+
+.cat-hero-kpis {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* ── Two-column page layout (habits, goals, etc.) ───────────────────────────── */
+.page-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(248px, 0.78fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.page-main {
+  display: grid;
+  gap: 0;        /* individual items already carry margin-bottom */
+  min-width: 0;
+}
+
+.page-side {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  position: sticky;
+  top: 18px;
+}
+
+.page-side-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(20px);
+  border-radius: 22px;
+  padding: 18px 20px;
+}
+
+.page-side-kicker {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text3);
+  margin-bottom: 14px;
+}
+
+/* Week activity dots */
+.side-week-dots {
+  display: flex;
+  gap: 5px;
+}
+
+.side-week-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+}
+
+.side-week-dot {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 7px;
+  background: var(--border);
+  transition: background 0.2s ease;
+}
+
+.side-week-dot.done {
+  background: var(--accent);
+}
+
+.side-week-dot.today {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.side-week-label {
+  font-size: 10px;
+  color: var(--text3);
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* Category breakdown rows */
+.side-cat-row {
+  margin-bottom: 10px;
+}
+
+.side-cat-row:last-child {
+  margin-bottom: 0;
+}
+
+.side-cat-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.side-cat-count {
+  font-size: 11px;
+  color: var(--text3);
+  font-weight: 700;
+}
+
+/* No double-spacing when workspace-tool cards sit inside page-side grid */
+.page-side .workspace-tool {
+  margin-bottom: 0;
+}
+
+/* Habits inside a side card shouldn't add extra bottom margin */
+.page-side-card .habit-item {
+  margin-bottom: 6px;
+}
+.page-side-card .habit-item:last-child,
+.page-side-card .habit-item-wrap:last-child .habit-item {
+  margin-bottom: 0;
+}
+
+/* Responsive: collapse sidebar below 960px */
+@media (max-width: 960px) {
+  .page-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .page-side {
+    position: static;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+}
+
+@media (max-width: 600px) {
+  .page-side {
+    display: none;
+  }
+}
+
+/* ── Legacy toolbar (keep for any remaining uses) ───────────────────────────── */
 .page-toolbar {
   display: flex;
   align-items: flex-end;
@@ -3750,6 +4040,46 @@ select.form-input {
   .workspace-tool-head,
   .workspace-tool-row {
     align-items: stretch;
+  }
+
+  .page-hero {
+    flex-wrap: wrap;
+    border-radius: 20px;
+    padding: 18px 18px;
+    gap: 16px;
+  }
+
+  .page-hero-accent {
+    display: none;
+  }
+
+  .page-hero-actions {
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .page-kpi-row {
+    gap: 8px;
+  }
+
+  .page-kpi {
+    min-width: 54px;
+    padding: 9px 10px;
+  }
+
+  .page-kpi-val {
+    font-size: 17px;
+  }
+
+  .cat-hero {
+    border-radius: 18px;
+    padding: 14px 16px;
+  }
+
+  .cat-hero-kpis {
+    display: none;
   }
 
   .workspace-plan-row {

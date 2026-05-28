@@ -1,7 +1,7 @@
 const AI_CONFIG = {
   enabled: true,
   endpoint: "/api/ai",
-  model: "gemini-2.0-flash-lite",
+  model: "meta-llama/llama-3.1-8b-instruct:free",
   personalities: {
     fullscreen: {
       identity: "You are Pulse AI, a thoughtful personal productivity coach inside the Pulse app.",
@@ -643,6 +643,17 @@ function scrollToAuth(mode) {
 function switchTab(mode) {
   if (authMode === mode) return;
   authMode = mode;
+
+  // Restore anything showForgotPassword() may have hidden
+  document.getElementById("authPassGroup")?.classList.remove("hidden");
+  document.getElementById("forgotPassWrap")?.classList.remove("hidden");
+  const toggle = document.querySelector(".auth-toggle");
+  if (toggle) toggle.style.visibility = "";
+  const foot = document.getElementById("authFoot");
+  if (foot) foot.textContent = isFirebaseConfigured()
+    ? "Your account and progress sync through Firebase so you can sign in across devices."
+    : "Accounts are stored on this device for now, so you can start using Pulse right away.";
+
   document.getElementById("tabIn").classList.toggle("active", mode === "in");
   document.getElementById("tabUp").classList.toggle("active", mode === "up");
   document.getElementById("authBtn").textContent = mode === "in" ? "Sign in" : "Create account";
@@ -674,7 +685,49 @@ function showAuthErr(msg) {
   el.classList.remove("hidden");
 }
 
+function showForgotPassword() {
+  authMode = "forgot";
+  document.getElementById("authPassGroup")?.classList.add("hidden");
+  document.getElementById("forgotPassWrap")?.classList.add("hidden");
+  const toggle = document.querySelector(".auth-toggle");
+  if (toggle) toggle.style.visibility = "hidden";
+  const title = document.getElementById("authCardTitle");
+  const sub = document.getElementById("authCardSubText");
+  if (title) title.textContent = "Reset your password.";
+  if (sub) sub.textContent = "Enter your email and we'll send a reset link.";
+  document.getElementById("authBtn").textContent = "Send reset link";
+  document.getElementById("authErr").classList.add("hidden");
+  const foot = document.getElementById("authFoot");
+  if (foot) foot.innerHTML = `<button type="button" style="background:none;border:none;cursor:pointer;font-size:12px;font-weight:700;color:var(--accent-text);padding:0" onclick="switchTab('in')">← Back to sign in</button>`;
+}
+
+async function sendPasswordReset() {
+  const email = document.getElementById("authUser").value.trim();
+  if (!email) return showAuthErr("Enter your email address first.");
+  const btn = document.getElementById("authBtn");
+  btn.disabled = true;
+  btn.textContent = "Sending...";
+  try {
+    const resp = await fetch("/api/send-password-reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+    const data = await resp.json();
+    if (!data.sent) throw new Error(data.error || "Failed");
+    document.getElementById("authErr").classList.add("hidden");
+    const foot = document.getElementById("authFoot");
+    if (foot) foot.innerHTML = `✅ Reset link sent to <strong>${email}</strong> — check your inbox.`;
+  } catch {
+    showAuthErr("Couldn't send reset email — try again in a moment.");
+  }
+  btn.disabled = false;
+  btn.textContent = "Send reset link";
+}
+
 async function submitAuth() {
+  if (authMode === "forgot") { await sendPasswordReset(); return; }
+
   const username = document.getElementById("authUser").value.trim();
   const pw = document.getElementById("authPass").value;
   const btn = document.getElementById("authBtn");
@@ -724,9 +777,17 @@ function showApp() {
   document.getElementById("verifyScreen")?.classList.add("hidden");
   document.getElementById("appWrap").classList.remove("hidden");
   document.getElementById("mobNav").classList.remove("hidden");
-  applyTheme(S.settings.theme || "light");
+  applyTheme(S.settings.theme);
   syncUserUI();
   nav("dashboard");
+
+  // Show toast if user just verified their email via the link
+  const _params = new URLSearchParams(window.location.search);
+  if (_params.get("verified") === "1") {
+    setTimeout(() => toast("✅ Email verified — welcome to Pulse!"), 600);
+    history.replaceState({}, "", window.location.pathname);
+  }
+
   // Re-attach interval ticks for any timers that were running when state was loaded
   if (getPomodoroTimer().running) startPomodoroTimerTick();
   if (getWorkoutTimer().running) runWorkoutTimer();
@@ -2029,12 +2090,158 @@ function categoryWorkspacePage(categoryId) {
   const goalPct = totalTarget ? Math.round((totalDone / totalTarget) * 100) : 0;
   const latestNote = notes[0];
 
+  const catHeroHtml = `
+    <div class="cat-hero" style="--cat-color:${category.color}">
+      <div class="cat-hero-icon">${category.emoji}</div>
+      <div class="cat-hero-body">
+        <div class="cat-hero-title">${category.label}</div>
+        <div class="cat-hero-sub">${doneToday} of ${habits.length} habit${habits.length !== 1 ? "s" : ""} done today · ${activeGoals.length} active goal${activeGoals.length !== 1 ? "s" : ""}</div>
+      </div>
+      <div class="cat-hero-kpis">
+        <div class="page-kpi"><div class="page-kpi-val" style="color:var(--cat-color)">${doneToday}/${habits.length}</div><div class="page-kpi-label">Today</div></div>
+        <div class="page-kpi"><div class="page-kpi-val">${goalPct}%</div><div class="page-kpi-label">Goals</div></div>
+      </div>
+    </div>
+  `;
+
+  // ── Study: two-column layout ─────────────────────────────────────────────
+  if (categoryId === "study") {
+    return `
+      ${catHeroHtml}
+      <div class="page-layout" style="align-items:start">
+        <div class="page-main">
+          ${renderPomodoroTimerCard()}
+          ${renderFlashcardWidget()}
+        </div>
+        <aside class="page-side">
+          ${renderStudyTimerCard()}
+          ${renderChecklistCard()}
+          ${habits.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker" style="display:flex;justify-content:space-between;align-items:center">
+                <span>Study habits</span>
+                <button class="sec-action" style="margin:0" onclick="nav('habits')">All →</button>
+              </div>
+              ${habits.map((h) => habitRow(h, false)).join("")}
+            </div>
+          ` : ""}
+          ${activeGoals.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker" style="display:flex;justify-content:space-between;align-items:center">
+                <span>Goals · ${goalPct}%</span>
+                <button class="sec-action" style="margin:0" onclick="nav('goals')">All →</button>
+              </div>
+              <div class="dash-side-list">
+                ${activeGoals.slice(0, 4).map((g) => `
+                  <div class="dash-mini-row">
+                    <div>
+                      <strong>${esc(g.icon)} ${esc(g.name)}</strong>
+                      <span>${goalCur(g)} / ${g.target} ${esc(g.unit)}</span>
+                    </div>
+                    <span style="font-weight:800;font-size:13px;color:var(--accent)">${Math.round((goalCur(g) / g.target) * 100)}%</span>
+                  </div>`).join("")}
+              </div>
+            </div>
+          ` : ""}
+          ${notes.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker" style="display:flex;justify-content:space-between;align-items:center">
+                <span>Recent activity</span>
+                <button class="sec-action" style="margin:0" onclick="nav('notes')">Notes →</button>
+              </div>
+              <div class="dash-side-list">
+                ${notes.slice(0, 3).map((n) => `
+                  <div class="dash-mini-row">
+                    <strong style="font-size:12px">${esc(n.title || n.goalName || "Activity note")}</strong>
+                    <span>${n.date || ""}</span>
+                  </div>`).join("")}
+              </div>
+            </div>
+          ` : ""}
+        </aside>
+      </div>
+    `;
+  }
+
+  // ── Workout: two-column layout ──────────────────────────────────────────
+  if (categoryId === "workout") {
+    return `
+      ${catHeroHtml}
+      <div class="page-layout" style="align-items:start">
+        <div class="page-main">
+          ${renderWorkoutTimerCard()}
+        </div>
+        <aside class="page-side">
+          ${hasContent ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker">Today</div>
+              <div class="dash-side-list">
+                <div class="dash-mini-row">
+                  <strong>Habits done</strong>
+                  <span>${doneToday} / ${habits.length}</span>
+                </div>
+                <div class="dash-mini-row">
+                  <strong>Active goals</strong>
+                  <span>${activeGoals.length}${goalPct ? ` · ${goalPct}%` : ""}</span>
+                </div>
+                ${notes.length ? `
+                  <div class="dash-mini-row">
+                    <strong>Activity logged</strong>
+                    <span>${notes.length} note${notes.length !== 1 ? "s" : ""}</span>
+                  </div>` : ""}
+              </div>
+            </div>
+          ` : ""}
+          ${habits.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker" style="display:flex;justify-content:space-between;align-items:center">
+                <span>Workout habits</span>
+                <button class="sec-action" style="margin:0" onclick="nav('habits')">All →</button>
+              </div>
+              ${habits.map((h) => habitRow(h, false)).join("")}
+            </div>
+          ` : ""}
+          ${activeGoals.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker" style="display:flex;justify-content:space-between;align-items:center">
+                <span>Goals · ${goalPct}%</span>
+                <button class="sec-action" style="margin:0" onclick="nav('goals')">All →</button>
+              </div>
+              <div class="dash-side-list">
+                ${activeGoals.slice(0, 4).map((g) => `
+                  <div class="dash-mini-row">
+                    <div>
+                      <strong>${esc(g.icon)} ${esc(g.name)}</strong>
+                      <span>${goalCur(g)} / ${g.target} ${esc(g.unit)}</span>
+                    </div>
+                    <span style="font-weight:800;font-size:13px;color:var(--accent)">${Math.round((goalCur(g) / g.target) * 100)}%</span>
+                  </div>`).join("")}
+              </div>
+            </div>
+          ` : ""}
+          ${notes.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker" style="display:flex;justify-content:space-between;align-items:center">
+                <span>Recent activity</span>
+                <button class="sec-action" style="margin:0" onclick="nav('notes')">Notes →</button>
+              </div>
+              <div class="dash-side-list">
+                ${notes.slice(0, 3).map((n) => `
+                  <div class="dash-mini-row">
+                    <strong style="font-size:12px">${esc(n.title || n.goalName || "Activity note")}</strong>
+                    <span>${n.date || ""}</span>
+                  </div>`).join("")}
+              </div>
+            </div>
+          ` : ""}
+        </aside>
+      </div>
+    `;
+  }
+
+  // ── Other categories: flat layout ────────────────────────────────────────
   return `
-    ${categoryId === "study" ? renderStudyTimerCard() : ""}
-    ${categoryId === "study" ? renderPomodoroTimerCard() : ""}
-    ${categoryId === "study" ? renderChecklistCard() : ""}
-    ${categoryId === "study" ? renderFlashcardWidget() : ""}
-    ${categoryId === "workout" ? renderWorkoutTimerCard() : ""}
+    ${catHeroHtml}
 
     ${hasContent ? `
     <div class="dash-stats" style="margin-top:16px;margin-bottom:0">
@@ -2305,9 +2512,52 @@ const PAGES = {
 
   habits() {
     const filtered = habFilter === "all" ? S.habits : S.habits.filter((h) => h.category === habFilter);
+    const doneToday = S.habits.filter((h) => h.logs && h.logs[getTodayStr()]).length;
+    const total = S.habits.length;
+    const pct = total ? Math.round((doneToday / total) * 100) : 0;
+    const streak = appStreak();
+    const today = getTodayStr();
+
+    // Sidebar — last 7 days activity dots
+    const last7 = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - (6 - i));
+      const ds = fmtDate(d);
+      return { ds, done: S.habits.some((h) => h.logs && h.logs[ds]), isToday: ds === today,
+               label: ["S","M","T","W","T","F","S"][d.getDay()] };
+    });
+
+    // Sidebar — category breakdown
+    const catBreakdown = CATS.map((c) => {
+      const ch = S.habits.filter((h) => h.category === c.id);
+      if (!ch.length) return null;
+      const cd = ch.filter((h) => h.logs && h.logs[today]).length;
+      return { c, total: ch.length, done: cd, pct: Math.round((cd / ch.length) * 100) };
+    }).filter(Boolean);
+
+    // Sidebar — top 3 streaks
+    const topStreaks = [...S.habits]
+      .map((h) => ({ h, s: habitStreak(h) }))
+      .filter((x) => x.s > 0)
+      .sort((a, b) => b.s - a.s)
+      .slice(0, 3);
+
     return `
-      <div class="page-toolbar">
-        <button class="btn btn-primary" onclick="openAddHabit()">+ Add habit</button>
+      <div class="page-hero">
+        <div class="page-hero-accent" style="background:var(--accent)"></div>
+        <div class="page-hero-body">
+          <div class="page-hero-kicker">Habits</div>
+          <div class="page-hero-num">${doneToday}<span class="page-hero-num-denom"> / ${total}</span></div>
+          <div class="page-hero-sub">${total > 0 ? `${pct}% done today` : "No habits yet"}${streak > 0 ? ` · 🔥 ${streak} day streak` : ""}</div>
+          ${total > 0 ? `<div class="page-hero-bar"><div class="page-hero-bar-fill" style="width:${pct}%;background:var(--accent)"></div></div>` : ""}
+        </div>
+        <div class="page-hero-actions">
+          <button class="btn btn-primary" onclick="openAddHabit()">+ Add habit</button>
+          <div class="page-kpi-row">
+            <div class="page-kpi"><div class="page-kpi-val">${pct}%</div><div class="page-kpi-label">Today</div></div>
+            <div class="page-kpi"><div class="page-kpi-val">${streak}</div><div class="page-kpi-label">Streak</div></div>
+            <div class="page-kpi"><div class="page-kpi-val">${total}</div><div class="page-kpi-label">Total</div></div>
+          </div>
+        </div>
       </div>
 
       <div class="filter-pills">
@@ -2315,11 +2565,62 @@ const PAGES = {
         ${CATS.map((c) => `<div class="fpill ${habFilter === c.id ? "active" : ""}" onclick="setHabFilter('${c.id}')">${c.emoji} ${c.label}</div>`).join("")}
       </div>
 
-      ${
-        filtered.length
-          ? filtered.map((h) => habitRow(h, false)).join("")
-          : `<div class="empty"><div class="empty-icon">○</div><div class="empty-title">No habits yet</div><div class="empty-text">Add your first habit to begin building a steadier routine.</div></div>`
-      }
+      <div class="page-layout">
+        <div class="page-main">
+          ${filtered.length
+            ? filtered.map((h) => habitRow(h, false)).join("")
+            : `<div class="empty"><div class="empty-icon">○</div><div class="empty-title">No habits yet</div><div class="empty-text">Add your first habit to begin building a steadier routine.</div></div>`}
+        </div>
+
+        <aside class="page-side">
+          <div class="page-side-card">
+            <div class="page-side-kicker">This week</div>
+            <div class="side-week-dots">
+              ${last7.map((d) => `
+                <div class="side-week-day">
+                  <div class="side-week-dot${d.done ? " done" : ""}${d.isToday ? " today" : ""}"></div>
+                  <div class="side-week-label">${d.label}</div>
+                </div>`).join("")}
+            </div>
+            <div style="margin-top:16px;display:flex;align-items:baseline;gap:8px">
+              <span style="font-size:32px;font-weight:800;letter-spacing:-0.04em;line-height:1">${streak}</span>
+              <span style="font-size:13px;color:var(--text2)">day streak 🔥</span>
+            </div>
+          </div>
+
+          ${catBreakdown.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker">By category</div>
+              ${catBreakdown.map(({ c, total: ct, done: cd, pct: cp }) => `
+                <div class="side-cat-row">
+                  <div class="side-cat-label">
+                    <span>${c.emoji} ${c.label}</span>
+                    <span class="side-cat-count">${cd}/${ct}</span>
+                  </div>
+                  <div class="prog-track" style="height:4px;margin-top:5px">
+                    <div class="prog-fill" style="width:${cp}%;background:${c.color}"></div>
+                  </div>
+                </div>`).join("")}
+            </div>
+          ` : ""}
+
+          ${topStreaks.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker">Top streaks</div>
+              <div class="dash-side-list">
+                ${topStreaks.map(({ h, s }) => `
+                  <div class="dash-mini-row">
+                    <div>
+                      <strong>${esc(h.icon)} ${esc(h.name)}</strong>
+                      <span>${s} day${s !== 1 ? "s" : ""}</span>
+                    </div>
+                    <span style="font-size:18px">🔥</span>
+                  </div>`).join("")}
+              </div>
+            </div>
+          ` : ""}
+        </aside>
+      </div>
     `;
   },
 
@@ -2327,10 +2628,44 @@ const PAGES = {
     const filtered = goalFilter === "all" ? S.goals : S.goals.filter((g) => g.category === goalFilter);
     const active = filtered.filter((g) => goalCur(g) < g.target);
     const completed = filtered.filter((g) => goalCur(g) >= g.target);
+    const allActive = S.goals.filter((g) => goalCur(g) < g.target);
+    const allCompleted = S.goals.filter((g) => goalCur(g) >= g.target);
+    const totalTarget = allActive.reduce((s, g) => s + g.target, 0);
+    const totalDone = allActive.reduce((s, g) => s + goalCur(g), 0);
+    const overallPct = totalTarget ? Math.round((totalDone / totalTarget) * 100) : 0;
+
+    // Sidebar — category progress
+    const catProgress = CATS.map((c) => {
+      const cg = allActive.filter((g) => g.category === c.id);
+      if (!cg.length) return null;
+      const ct = cg.reduce((s, g) => s + g.target, 0);
+      const cd = cg.reduce((s, g) => s + goalCur(g), 0);
+      return { c, count: cg.length, pct: ct ? Math.round((cd / ct) * 100) : 0 };
+    }).filter(Boolean);
+
+    // Sidebar — recent logs across all goals (last 4)
+    const recentLogs = S.goals
+      .flatMap((g) => (g.logs || []).map((l) => ({ ...l, gName: g.name, gIcon: g.icon, unit: g.unit })))
+      .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
+      .slice(0, 4);
 
     return `
-      <div class="page-toolbar">
-        <button class="btn btn-primary" onclick="openAddGoal()">+ Add goal</button>
+      <div class="page-hero">
+        <div class="page-hero-accent" style="background:var(--success)"></div>
+        <div class="page-hero-body">
+          <div class="page-hero-kicker">Goals</div>
+          <div class="page-hero-num">${allActive.length}<span class="page-hero-num-denom"> active</span></div>
+          <div class="page-hero-sub">${allCompleted.length} completed · ${overallPct}% overall progress</div>
+          ${allActive.length > 0 ? `<div class="page-hero-bar"><div class="page-hero-bar-fill" style="width:${overallPct}%;background:var(--success)"></div></div>` : ""}
+        </div>
+        <div class="page-hero-actions">
+          <button class="btn btn-primary" onclick="openAddGoal()">+ Add goal</button>
+          <div class="page-kpi-row">
+            <div class="page-kpi"><div class="page-kpi-val">${overallPct}%</div><div class="page-kpi-label">Progress</div></div>
+            <div class="page-kpi"><div class="page-kpi-val">${allActive.length}</div><div class="page-kpi-label">Active</div></div>
+            <div class="page-kpi"><div class="page-kpi-val">${allCompleted.length}</div><div class="page-kpi-label">Done</div></div>
+          </div>
+        </div>
       </div>
 
       <div class="filter-pills">
@@ -2338,26 +2673,68 @@ const PAGES = {
         ${CATS.map((c) => `<div class="fpill ${goalFilter === c.id ? "active" : ""}" onclick="setGoalFilter('${c.id}')">${c.emoji} ${c.label}</div>`).join("")}
       </div>
 
-      ${
-        !active.length && !completed.length
-          ? `<div class="empty"><div class="empty-icon">◎</div><div class="empty-title">No goals yet</div><div class="empty-text">Set one measurable target and Pulse will help you keep it moving.</div></div>`
-          : ""
-      }
-
-      ${active.length ? `<div class="grid2">${active.map((g) => goalCard(g)).join("")}</div>` : ""}
-
-      ${
-        completed.length
-          ? `
-        <div class="page-section">
-          <div class="sec-hd">
-            <div class="sec-label">Completed</div>
+      ${!active.length && !completed.length ? `
+        <div class="empty"><div class="empty-icon">◎</div><div class="empty-title">No goals yet</div><div class="empty-text">Set one measurable target and Pulse will help you keep it moving.</div></div>
+      ` : `
+        <div class="page-layout">
+          <div class="page-main">
+            ${active.length ? `<div class="grid2">${active.map((g) => goalCard(g)).join("")}</div>` : ""}
+            ${completed.length ? `
+              <div class="page-section" style="margin-top:${active.length ? "8px" : "0"}">
+                <div class="sec-hd"><div class="sec-label">Completed (${completed.length})</div></div>
+                <div class="grid2">${completed.map((g) => goalCard(g)).join("")}</div>
+              </div>` : ""}
           </div>
-          <div class="grid2">${completed.map((g) => goalCard(g)).join("")}</div>
+
+          <aside class="page-side">
+            ${catProgress.length ? `
+              <div class="page-side-card">
+                <div class="page-side-kicker">By category</div>
+                ${catProgress.map(({ c, count, pct }) => `
+                  <div class="side-cat-row">
+                    <div class="side-cat-label">
+                      <span>${c.emoji} ${c.label}</span>
+                      <span class="side-cat-count">${count} goal${count !== 1 ? "s" : ""} · ${pct}%</span>
+                    </div>
+                    <div class="prog-track" style="height:4px;margin-top:5px">
+                      <div class="prog-fill" style="width:${pct}%;background:${c.color}"></div>
+                    </div>
+                  </div>`).join("")}
+              </div>
+            ` : ""}
+
+            ${recentLogs.length ? `
+              <div class="page-side-card">
+                <div class="page-side-kicker">Recent logs</div>
+                <div class="dash-side-list">
+                  ${recentLogs.map((l) => `
+                    <div class="dash-mini-row">
+                      <div>
+                        <strong>${esc(l.gIcon)} ${esc(l.gName)}</strong>
+                        <span>+${l.value} ${esc(l.unit)} · ${l.date}</span>
+                      </div>
+                    </div>`).join("")}
+                </div>
+              </div>
+            ` : ""}
+
+            ${allCompleted.length && goalFilter !== "all" ? `
+              <div class="page-side-card">
+                <div class="page-side-kicker">All completed (${allCompleted.length})</div>
+                <div class="dash-side-list">
+                  ${allCompleted.slice(0, 4).map((g) => `
+                    <div class="dash-mini-row">
+                      <div>
+                        <strong>${esc(g.icon)} ${esc(g.name)}</strong>
+                        <span>${g.target} ${esc(g.unit)} ✓</span>
+                      </div>
+                    </div>`).join("")}
+                </div>
+              </div>
+            ` : ""}
+          </aside>
         </div>
-      `
-          : ""
-      }
+      `}
     `;
   },
 
@@ -2375,6 +2752,25 @@ const PAGES = {
       .sort((a, b) => b.createdAt - a.createdAt);
     const activities = activityNotes();
     const activeNb = getActiveNotebook();
+    const lastUpdated = S.notes.reduce((latest, n) => Math.max(latest, n.createdAt || 0), 0);
+
+    const heroHtml = `
+      <div class="page-hero">
+        <div class="page-hero-accent" style="background:#8b5cf6"></div>
+        <div class="page-hero-body">
+          <div class="page-hero-kicker">Notebook</div>
+          <div class="page-hero-num">${notebookDocs.length}<span class="page-hero-num-denom"> notebook${notebookDocs.length !== 1 ? "s" : ""}</span></div>
+          <div class="page-hero-sub">${activities.length} activity note${activities.length !== 1 ? "s" : ""}${lastUpdated ? ` · updated ${fmtShortDate(lastUpdated)}` : ""}</div>
+        </div>
+        <div class="page-hero-actions">
+          <button class="btn btn-primary" onclick="openNewNotebookModal()">+ New notebook</button>
+          <div class="page-kpi-row">
+            <div class="page-kpi"><div class="page-kpi-val">${notebookDocs.length}</div><div class="page-kpi-label">Notebooks</div></div>
+            <div class="page-kpi"><div class="page-kpi-val">${activities.length}</div><div class="page-kpi-label">Activity</div></div>
+          </div>
+        </div>
+      </div>
+    `;
 
     const tabsHtml = `
       <div class="filter-pills">
@@ -2391,6 +2787,7 @@ const PAGES = {
     if (noteFilter === "notebook") {
       if (notebookDocs.length === 0) {
         return `
+          ${heroHtml}
           ${tabsHtml}
           <div class="empty">
             <div class="empty-icon">📓</div>
@@ -2423,46 +2820,66 @@ const PAGES = {
       }
 
       return `
+        ${heroHtml}
         ${tabsHtml}
         ${notebookDocs.length > 1 ? `
-          <div class="search-wrap" style="margin-bottom:12px">
+          <div class="search-wrap" style="margin-bottom:16px">
             <svg class="search-ic" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="9" r="7"></circle><path d="m16 16-3.5-3.5"></path></svg>
             <input class="search-input" type="text" placeholder="Search notebooks…" value="${esc(notebookSearch)}" oninput="notebookSearch=this.value;rerenderPage()">
             ${notebookSearch ? `<button class="search-clear" onclick="notebookSearch='';rerenderPage()">×</button>` : ""}
           </div>
         ` : ""}
-        ${!q ? `
-          <div class="notebook-composer surface-card">
-            <div class="nb-editor-header">
-              <div class="nb-editor-title" ondblclick="editNotebookTitle('${activeNb?.id}')" title="Double-click to rename">${esc(activeNb?.title || "")}</div>
-              <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
-                <button class="btn btn-ghost btn-sm" onclick="openNewNotebookModal()">+ New</button>
-                ${activeNb ? `<button class="btn btn-danger btn-sm" onclick="deleteNotebook('${activeNb.id}')">Delete</button>` : ""}
+        <div class="page-layout">
+          <div class="page-main">
+            ${q ? `
+              ${visibleNbs.length > 0 ? `
+                <div class="nb-list nb-list-search">
+                  ${visibleNbs.map((nb) => `
+                    <div class="nb-entry" onclick="notebookSearch='';switchNotebook('${nb.id}')">
+                      <div class="nb-entry-info">
+                        <div class="nb-entry-title">${esc(nb.title)}</div>
+                        <div class="nb-entry-preview">${nbSnippet(nb.content)}</div>
+                      </div>
+                      <div class="nb-entry-date">${fmtShortDate(nb.createdAt)}</div>
+                    </div>`).join("")}
+                </div>
+              ` : `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-title">No matches</div><div class="empty-text">Try a different word or phrase.</div></div>`}
+            ` : `
+              <div class="notebook-composer surface-card">
+                <div class="nb-editor-header">
+                  <div class="nb-editor-title" ondblclick="editNotebookTitle('${activeNb?.id}')" title="Double-click to rename">${esc(activeNb?.title || "")}</div>
+                  <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+                    <button class="btn btn-ghost btn-sm" onclick="openNewNotebookModal()">+ New</button>
+                    ${activeNb ? `<button class="btn btn-danger btn-sm" onclick="deleteNotebook('${activeNb.id}')">Delete</button>` : ""}
+                  </div>
+                </div>
+                ${activeNb ? `
+                  <div class="form-group" style="margin-bottom:0">
+                    <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing...">${esc(activeNb.content || "")}</textarea>
+                  </div>
+                  <div class="composer-actions">
+                    <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
+                  </div>
+                ` : `<div class="nb-select-prompt">Select a notebook to open it.</div>`}
+              </div>
+            `}
+          </div>
+          <aside class="page-side">
+            <div class="page-side-card">
+              <div class="page-side-kicker">${notebookDocs.length} Notebook${notebookDocs.length !== 1 ? "s" : ""}</div>
+              <div class="nb-list" style="margin-top:0">
+                ${notebookDocs.map((nb) => `
+                  <div class="nb-entry${!q && nb.id === activeNb?.id ? " active" : ""}" onclick="notebookSearch='';switchNotebook('${nb.id}')">
+                    <div class="nb-entry-info">
+                      <div class="nb-entry-title">${esc(nb.title)}</div>
+                      <div class="nb-entry-preview">${esc((nb.content || "").slice(0, 72)) || "Empty notebook"}</div>
+                    </div>
+                    <div class="nb-entry-date">${fmtShortDate(nb.createdAt)}</div>
+                  </div>`).join("")}
               </div>
             </div>
-            ${activeNb ? `
-              <div class="form-group" style="margin-bottom:0">
-                <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing...">${esc(activeNb.content || "")}</textarea>
-              </div>
-              <div class="composer-actions">
-                <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
-              </div>
-            ` : `<div class="nb-select-prompt">Select a notebook below to open it.</div>`}
-          </div>
-        ` : ""}
-        ${visibleNbs.length > 0 ? `
-          <div class="nb-list${q ? " nb-list-search" : ""}">
-            ${visibleNbs.map((nb) => `
-              <div class="nb-entry${!q && nb.id === activeNb?.id ? " active" : ""}" onclick="notebookSearch='';switchNotebook('${nb.id}')">
-                <div class="nb-entry-info">
-                  <div class="nb-entry-title">${esc(nb.title)}</div>
-                  <div class="nb-entry-preview">${nbSnippet(nb.content)}</div>
-                </div>
-                <div class="nb-entry-date">${fmtShortDate(nb.createdAt)}</div>
-              </div>
-            `).join("")}
-          </div>
-        ` : `<div class="empty" style="margin-top:16px"><div class="empty-icon">🔍</div><div class="empty-title">No matches</div><div class="empty-text">Try a different word or phrase.</div></div>`}
+          </aside>
+        </div>
       `;
     }
 
@@ -2477,16 +2894,48 @@ const PAGES = {
       );
     }
 
+    // Sidebar — notes count per goal
+    const actByGoal = {};
+    for (const n of activities) {
+      const k = n.goalName || "General";
+      actByGoal[k] = (actByGoal[k] || 0) + 1;
+    }
+    const actGoalRows = Object.entries(actByGoal).sort((a, b) => b[1] - a[1]).slice(0, 6);
+
     return `
+      ${heroHtml}
       ${tabsHtml}
-      <div class="search-wrap">
+      <div class="search-wrap" style="margin-bottom:16px">
         <svg class="search-ic" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="9" r="7"></circle><path d="m16 16-3.5-3.5"></path></svg>
         <input class="search-input" type="text" placeholder="Search activity notes..." value="${esc(noteSearch)}" oninput="noteSearch=this.value;rerenderPage()">
+        ${noteSearch ? `<button class="search-clear" onclick="noteSearch='';rerenderPage()">×</button>` : ""}
       </div>
-      ${visibleActivity.length
-        ? `<div class="notes-stack">${visibleActivity.map((n) => noteRow(n)).join("")}</div>`
-        : `<div class="empty"><div class="empty-icon">✎</div><div class="empty-title">${noteSearch ? "No notes found" : "No activity notes yet"}</div><div class="empty-text">${noteSearch ? "Try a different phrase." : "Activity notes are created automatically when you log goal progress."}</div></div>`
-      }
+      <div class="page-layout">
+        <div class="page-main">
+          ${visibleActivity.length
+            ? `<div class="notes-stack">${visibleActivity.map((n) => noteRow(n)).join("")}</div>`
+            : `<div class="empty"><div class="empty-icon">✎</div><div class="empty-title">${noteSearch ? "No notes found" : "No activity notes yet"}</div><div class="empty-text">${noteSearch ? "Try a different phrase." : "Activity notes are created automatically when you log goal progress."}</div></div>`
+          }
+        </div>
+        <aside class="page-side">
+          ${actGoalRows.length ? `
+            <div class="page-side-card">
+              <div class="page-side-kicker">By goal</div>
+              <div class="dash-side-list">
+                ${actGoalRows.map(([name, count]) => `
+                  <div class="dash-mini-row">
+                    <strong>${esc(name)}</strong>
+                    <span>${count} note${count !== 1 ? "s" : ""}</span>
+                  </div>`).join("")}
+              </div>
+            </div>
+          ` : ""}
+          <div class="page-side-card">
+            <div class="page-side-kicker">About activity notes</div>
+            <p style="font-size:13px;color:var(--text2);line-height:1.65">Activity notes are automatically created each time you log progress on a goal. They capture what you did and when.</p>
+          </div>
+        </aside>
+      </div>
     `;
   },
 
@@ -2709,7 +3158,7 @@ function toggleHabit(id) {
       const existing = meta.querySelector(".streak-chip");
       if (existing) existing.remove();
       const streak = habitStreak(habit);
-      if (streak > 0) meta.insertAdjacentHTML("beforeend", `<span class="streak-chip">${streak} day streak</span>`);
+      if (streak > 0) meta.insertAdjacentHTML("beforeend", `<span class="streak-chip">🔥 ${streak} day${streak !== 1 ? "s" : ""}</span>`);
     }
     // Dashboard ring still needs a re-render for the progress circle
     if (curPage === "dashboard") rerenderPage();
@@ -3407,7 +3856,7 @@ function renderAIPanelMsgs() {
   if (!getAIConfig() && !aiLoading) {
     const hint = document.createElement("div");
     hint.className = "ai-no-key";
-    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>GEMINI_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
+    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>OPENROUTER_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
     wrap.appendChild(hint);
   }
 
@@ -3431,7 +3880,7 @@ function renderAIPageMsgs() {
   if (!getAIConfig() && !aiLoading) {
     const hint = document.createElement("div");
     hint.className = "ai-no-key";
-    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>GEMINI_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
+    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>OPENROUTER_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
     wrap.appendChild(hint);
   }
 
