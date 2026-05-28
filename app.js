@@ -134,9 +134,11 @@ let currentUser = null;
 let authMode = "in";
 let curPage = "dashboard";
 let habFilter = "all";
+let openHabitCalendarId = null;
 let goalFilter = "all";
 let noteFilter = "notebook";
 let noteSearch = "";
+let notebookSearch = "";
 let activeNotebookId = null; // which notebook is open in the editor
 let flashcardDeckId = null;     // deck being studied/managed
 let flashcardCardIndex = 0;
@@ -240,13 +242,14 @@ function defaultState() {
         remaining: 25 * 60,
         completed: 0,
         running: false,
+        sessionLog: [], // [{ date: "YYYY-MM-DD", sessions: N, focusMinutes: N }]
       },
       studyChecklist: [],
       flashcardDecks: [],
     },
     settings: {
       name: "",
-      theme: "light",
+      theme: "", // "" = auto-detect from OS; "light" / "dark" = explicit
     },
   };
 }
@@ -329,6 +332,9 @@ function migrateState(state) {
         remaining: Math.max(1, Number(state.tools?.pomodoroTimer?.remaining) || 25 * 60),
         completed: Math.max(0, Number(state.tools?.pomodoroTimer?.completed) || 0),
         running: Boolean(state.tools?.pomodoroTimer?.running),
+        sessionLog: Array.isArray(state.tools?.pomodoroTimer?.sessionLog)
+          ? state.tools.pomodoroTimer.sessionLog
+          : [],
       },
       studyChecklist: Array.isArray(state.tools?.studyChecklist)
         ? state.tools.studyChecklist.map((item) => ({
@@ -354,7 +360,7 @@ function migrateState(state) {
     },
     settings: {
       name: state.settings?.name || "",
-      theme: state.settings?.theme || "light",
+      theme: state.settings?.theme ?? "",
     },
   };
 
@@ -545,15 +551,34 @@ async function doSignUp(username, pw) {
       const fb = await ensureFirebase();
       const clean = username.trim();
       const cred = await fb.authApi.createUserWithEmailAndPassword(fb.auth, clean, pw);
-      // Send verification email — Firebase handles delivery, no SMTP needed
+      // Send verification email via Resend + Firebase Admin (better deliverability)
+      // Falls back to Firebase's built-in sender if the endpoint isn't available
       let emailSent = false;
       let emailError = null;
       try {
-        await fb.authApi.sendEmailVerification(cred.user);
-        emailSent = true;
+        const resp = await fetch("/api/send-verification", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: cred.user.email, type: "verify" }),
+        });
+        const data = await resp.json();
+        if (data.sent) {
+          emailSent = true;
+        } else {
+          throw new Error(data.error || "send-verification returned no error");
+        }
       } catch (e) {
+        // Fallback: use Firebase's built-in sender
         emailError = e?.message || String(e);
-        console.error("sendEmailVerification failed:", emailError);
+        console.warn("Resend fallback — trying Firebase built-in:", emailError);
+        try {
+          await fb.authApi.sendEmailVerification(cred.user);
+          emailSent = true;
+          emailError = null;
+        } catch (e2) {
+          emailError = e2?.message || String(e2);
+          console.error("Both verification senders failed:", emailError);
+        }
       }
       return { uid: cred.user.uid, username: cred.user.email || clean, email: cred.user.email || clean, needsVerification: true, emailSent, emailError };
     } catch (error) {
@@ -753,10 +778,25 @@ async function resendVerification() {
   const user = fb.auth.currentUser;
   if (!user) return;
   try {
-    await fb.authApi.sendEmailVerification(user);
-    toast("Verification email resent — check your inbox");
-  } catch {
-    toast("Could not resend — wait a minute and try again");
+    const resp = await fetch("/api/send-verification", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, type: "verify" }),
+    });
+    const data = await resp.json();
+    if (data.sent) {
+      toast("Verification email resent — check your inbox");
+    } else {
+      throw new Error(data.error || "Failed");
+    }
+  } catch (e) {
+    // Fallback to Firebase built-in if the API endpoint fails
+    try {
+      await fb.authApi.sendEmailVerification(user);
+      toast("Verification email resent — check your inbox");
+    } catch {
+      toast("Could not resend — try again in a minute");
+    }
   }
 }
 
@@ -798,6 +838,7 @@ async function signOut() {
   aiOpen = false;
   activeNotebookId = null;
   noteFilter = "notebook";
+  notebookSearch = "";
   flashcardDeckId = null;
   flashcardStudyMode = false;
   flashcardFlipped = false;
@@ -913,6 +954,41 @@ function appStreak() {
 
 function goalCur(goal) {
   return (goal.logs || []).reduce((sum, log) => sum + log.value, 0);
+}
+
+function goalSparkline(goal) {
+  const DAYS = 14;
+  const today = new Date();
+  const data = [];
+  for (let i = DAYS - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const ds = fmtDate(d);
+    const dayVal = (goal.logs || [])
+      .filter((l) => (l.date || "").startsWith(ds))
+      .reduce((s, l) => s + (Number(l.value) || 0), 0);
+    data.push(dayVal);
+  }
+  if (data.every((v) => v === 0)) return "";
+  const max = Math.max(...data, 0.001);
+  const W = 100, H = 28;
+  const pts = data.map((v, i) => {
+    const x = ((i / (DAYS - 1)) * W).toFixed(1);
+    const y = (H - (v / max) * (H - 6) - 3).toFixed(1);
+    return `${x},${y}`;
+  }).join(" ");
+  const area = `0,${H} ${pts} ${W},${H}`;
+  const uid = goal.id.replace(/\W/g, "");
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" class="goal-sparkline" aria-hidden="true">
+    <defs>
+      <linearGradient id="spk${uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.2"/>
+        <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <polygon points="${area}" fill="url(#spk${uid})"/>
+    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
 }
 
 function activityNotes() {
@@ -1377,6 +1453,12 @@ function startPomodoroTimerTick() {
       // Phase transition — advance to the next phase
       if (t.phase === "work") {
         t.completed += 1;
+        // Record completed focus session
+        const today = getTodayStr();
+        if (!Array.isArray(t.sessionLog)) t.sessionLog = [];
+        const entry = t.sessionLog.find((e) => e.date === today);
+        if (entry) { entry.sessions += 1; entry.focusMinutes += t.duration; }
+        else t.sessionLog.push({ date: today, sessions: 1, focusMinutes: t.duration });
         if (t.completed >= t.sessionsBeforeLong) {
           t.phase = "longBreak";
           t.remaining = t.longBreak * 60;
@@ -1878,6 +1960,51 @@ function renderPomodoroTimerCard() {
   const dots = Array.from({ length: t.sessionsBeforeLong }, (_, i) =>
     `<span class="pomo-dot${i < t.completed ? " done" : ""}"></span>`
   ).join("");
+
+  // Session history — last 7 days
+  const log = Array.isArray(t.sessionLog) ? t.sessionLog : [];
+  const today = getTodayStr();
+  const todayEntry = log.find((e) => e.date === today);
+  const todaySessions = todayEntry?.sessions || 0;
+  const todayMins = todayEntry?.focusMinutes || 0;
+
+  const sevenDays = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    const ds = fmtDate(d);
+    const entry = log.find((e) => e.date === ds);
+    return { ds, sessions: entry?.sessions || 0, mins: entry?.focusMinutes || 0,
+             label: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()] };
+  });
+  const weekSessions = sevenDays.reduce((s, d) => s + d.sessions, 0);
+  const weekMins = sevenDays.reduce((s, d) => s + d.mins, 0);
+  const maxSessions = Math.max(...sevenDays.map((d) => d.sessions), 1);
+
+  const fmtMins = (m) => m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m}m`;
+
+  const historyHtml = `
+    <div class="pomo-history">
+      <div class="pomo-history-stats">
+        <div class="pomo-hstat">
+          <div class="pomo-hstat-val">${todaySessions}</div>
+          <div class="pomo-hstat-label">Today${todayMins ? ` · ${fmtMins(todayMins)}` : ""}</div>
+        </div>
+        <div class="pomo-hstat">
+          <div class="pomo-hstat-val">${weekSessions}</div>
+          <div class="pomo-hstat-label">This week${weekMins ? ` · ${fmtMins(weekMins)}` : ""}</div>
+        </div>
+      </div>
+      <div class="pomo-bar-chart">
+        ${sevenDays.map((d) => `
+          <div class="pomo-bar-col">
+            <div class="pomo-bar-wrap">
+              <div class="pomo-bar-fill${d.ds === today ? " today" : ""}" style="height:${d.sessions ? Math.max(8, Math.round((d.sessions / maxSessions) * 52)) : 0}px" title="${d.sessions} session${d.sessions !== 1 ? "s" : ""}"></div>
+            </div>
+            <div class="pomo-bar-label">${d.label}</div>
+          </div>`).join("")}
+      </div>
+    </div>
+  `;
+
   return `
     <div class="workspace-tool surface-card">
       <div class="workspace-tool-head">
@@ -1898,6 +2025,7 @@ function renderPomodoroTimerCard() {
         </div>
       </div>
       <div class="pomo-dots" id="pomodoroDots">${dots}</div>
+      ${weekSessions > 0 || todaySessions > 0 ? historyHtml : ""}
     </div>
   `;
 }
@@ -2288,37 +2416,68 @@ const PAGES = {
         `;
       }
 
+      // Filter notebooks by search query
+      const q = notebookSearch.trim().toLowerCase();
+      const visibleNbs = q
+        ? notebookDocs.filter((nb) =>
+            (nb.title || "").toLowerCase().includes(q) ||
+            (nb.content || "").toLowerCase().includes(q)
+          )
+        : notebookDocs;
+
+      // Highlight a match snippet in content
+      function nbSnippet(content) {
+        if (!q || !content) return esc((content || "").slice(0, 90)) || "Empty notebook";
+        const idx = content.toLowerCase().indexOf(q);
+        if (idx === -1) return esc(content.slice(0, 90)) || "Empty notebook";
+        const start = Math.max(0, idx - 30);
+        const raw = (start > 0 ? "…" : "") + content.slice(start, idx) +
+          "[[" + content.slice(idx, idx + q.length) + "]]" +
+          content.slice(idx + q.length, idx + q.length + 60) + "…";
+        return esc(raw).replace(/\[\[/g, '<mark class="nb-match">').replace(/\]\]/g, "</mark>");
+      }
+
       return `
         ${tabsHtml}
-        <div class="notebook-composer surface-card">
-          <div class="nb-editor-header">
-            <div class="nb-editor-title" ondblclick="editNotebookTitle('${activeNb?.id}')" title="Double-click to rename">${esc(activeNb?.title || "")}</div>
-            <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
-              <button class="btn btn-ghost btn-sm" onclick="openNewNotebookModal()">+ New</button>
-              ${activeNb ? `<button class="btn btn-danger btn-sm" onclick="deleteNotebook('${activeNb.id}')">Delete</button>` : ""}
-            </div>
+        ${notebookDocs.length > 1 ? `
+          <div class="search-wrap" style="margin-bottom:12px">
+            <svg class="search-ic" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="9" r="7"></circle><path d="m16 16-3.5-3.5"></path></svg>
+            <input class="search-input" type="text" placeholder="Search notebooks…" value="${esc(notebookSearch)}" oninput="notebookSearch=this.value;rerenderPage()">
+            ${notebookSearch ? `<button class="search-clear" onclick="notebookSearch='';rerenderPage()">×</button>` : ""}
           </div>
-          ${activeNb ? `
-            <div class="form-group" style="margin-bottom:0">
-              <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing...">${esc(activeNb.content || "")}</textarea>
-            </div>
-            <div class="composer-actions">
-              <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
-            </div>
-          ` : `<div class="nb-select-prompt">Select a notebook below to open it.</div>`}
-        </div>
-
-        <div class="nb-list">
-          ${notebookDocs.map((nb) => `
-            <div class="nb-entry${nb.id === activeNb?.id ? " active" : ""}" onclick="switchNotebook('${nb.id}')">
-              <div class="nb-entry-info">
-                <div class="nb-entry-title">${esc(nb.title)}</div>
-                <div class="nb-entry-preview">${esc((nb.content || "").slice(0, 90)) || "Empty notebook"}</div>
+        ` : ""}
+        ${!q ? `
+          <div class="notebook-composer surface-card">
+            <div class="nb-editor-header">
+              <div class="nb-editor-title" ondblclick="editNotebookTitle('${activeNb?.id}')" title="Double-click to rename">${esc(activeNb?.title || "")}</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+                <button class="btn btn-ghost btn-sm" onclick="openNewNotebookModal()">+ New</button>
+                ${activeNb ? `<button class="btn btn-danger btn-sm" onclick="deleteNotebook('${activeNb.id}')">Delete</button>` : ""}
               </div>
-              <div class="nb-entry-date">${fmtShortDate(nb.createdAt)}</div>
             </div>
-          `).join("")}
-        </div>
+            ${activeNb ? `
+              <div class="form-group" style="margin-bottom:0">
+                <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing...">${esc(activeNb.content || "")}</textarea>
+              </div>
+              <div class="composer-actions">
+                <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
+              </div>
+            ` : `<div class="nb-select-prompt">Select a notebook below to open it.</div>`}
+          </div>
+        ` : ""}
+        ${visibleNbs.length > 0 ? `
+          <div class="nb-list${q ? " nb-list-search" : ""}">
+            ${visibleNbs.map((nb) => `
+              <div class="nb-entry${!q && nb.id === activeNb?.id ? " active" : ""}" onclick="notebookSearch='';switchNotebook('${nb.id}')">
+                <div class="nb-entry-info">
+                  <div class="nb-entry-title">${esc(nb.title)}</div>
+                  <div class="nb-entry-preview">${nbSnippet(nb.content)}</div>
+                </div>
+                <div class="nb-entry-date">${fmtShortDate(nb.createdAt)}</div>
+              </div>
+            `).join("")}
+          </div>
+        ` : `<div class="empty" style="margin-top:16px"><div class="empty-icon">🔍</div><div class="empty-title">No matches</div><div class="empty-text">Try a different word or phrase.</div></div>`}
       `;
     }
 
@@ -2378,29 +2537,75 @@ const PAGES = {
   },
 };
 
+function habitHeatmap(habit) {
+  const WEEKS = 13, DAYS = 7;
+  const today = new Date();
+  const c = cat(habit.category);
+  const cells = [];
+  for (let i = WEEKS * DAYS - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    cells.push({
+      key: fmtDate(d),
+      done: !!(habit.logs && habit.logs[fmtDate(d)]),
+      isToday: i === 0,
+    });
+  }
+  const weeks = Array.from({ length: WEEKS }, (_, w) => cells.slice(w * DAYS, (w + 1) * DAYS));
+  const totalDone = cells.filter((c) => c.done).length;
+  return `
+    <div class="habit-heatmap">
+      <div class="heatmap-meta">${totalDone} day${totalDone !== 1 ? "s" : ""} completed in the last ${WEEKS} weeks</div>
+      <div class="heatmap-grid">
+        ${weeks.map((week) => `
+          <div class="heatmap-col">
+            ${week.map((cell) => `<div
+              class="heatmap-cell${cell.done ? " hm-done" : ""}${cell.isToday ? " hm-today" : ""}"
+              style="${cell.done ? `background:${c.color};border-color:${c.color}` : ""}"
+              title="${cell.key}${cell.done ? " ✓" : ""}"></div>`).join("")}
+          </div>`).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function toggleHabitCalendar(id) {
+  openHabitCalendarId = openHabitCalendarId === id ? null : id;
+  rerenderPage();
+}
+
 function habitRow(habit, dashMode) {
   const done = habit.logs && habit.logs[getTodayStr()];
   const streak = habitStreak(habit);
   const c = cat(habit.category);
+  const calOpen = !dashMode && openHabitCalendarId === habit.id;
   return `
-    <div class="habit-item ${done ? "done" : ""}" data-habit-id="${habit.id}">
-      <div
-        class="hcheck ${done ? "checked" : ""}"
-        style="${done ? `background:${c.color};border-color:${c.color}` : ""}"
-        onclick="toggleHabit('${habit.id}')"
-        title="${done ? "Mark undone" : "Mark done"}"
-      >
-        ${done ? "✓" : ""}
-      </div>
-      <div class="habit-emoji">${habit.icon}</div>
-      <div class="habit-info">
-        <div class="habit-name">${esc(habit.name)}</div>
-        <div class="habit-meta">
-          <span class="badge badge-${habit.category}">${c.emoji} ${c.label}</span>
-          ${streak > 0 ? `<span class="streak-chip">${streak} day streak</span>` : ""}
+    <div class="habit-item-wrap">
+      <div class="habit-item ${done ? "done" : ""}" data-habit-id="${habit.id}">
+        <div
+          class="hcheck ${done ? "checked" : ""}"
+          style="${done ? `background:${c.color};border-color:${c.color}` : ""}"
+          onclick="toggleHabit('${habit.id}')"
+          title="${done ? "Mark undone" : "Mark done"}"
+        >
+          ${done ? "✓" : ""}
         </div>
+        <div class="habit-emoji">${habit.icon}</div>
+        <div class="habit-info">
+          <div class="habit-name">${esc(habit.name)}</div>
+          <div class="habit-meta">
+            <span class="badge badge-${habit.category}">${c.emoji} ${c.label}</span>
+            ${streak > 0 ? `<span class="streak-chip">🔥 ${streak} day${streak !== 1 ? "s" : ""}</span>` : ""}
+          </div>
+        </div>
+        ${!dashMode ? `
+          <button class="btn btn-ghost btn-icon btn-sm heatmap-toggle${calOpen ? " active" : ""}" onclick="toggleHabitCalendar('${habit.id}')" title="View history">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd"/></svg>
+          </button>
+          <button class="btn btn-ghost btn-icon btn-sm" onclick="deleteHabit('${habit.id}')" title="Delete">×</button>
+        ` : ""}
       </div>
-      ${!dashMode ? `<button class="btn btn-ghost btn-icon btn-sm" onclick="deleteHabit('${habit.id}')" title="Delete">×</button>` : ""}
+      ${calOpen ? habitHeatmap(habit) : ""}
     </div>
   `;
 }
@@ -2437,6 +2642,7 @@ function goalCard(goal) {
         </div>
       </div>
       <div class="prog-track" style="margin-top:14px"><div class="prog-fill" style="width:${pct}%;background:${c.color}"></div></div>
+      ${goalSparkline(goal)}
       <div class="goal-actions">
         ${done ? `<span class="goal-complete">Completed</span>` : `<button class="btn btn-sm btn-outline" onclick="openLogGoal('${goal.id}')">+ Log</button>`}
         <button class="btn btn-ghost btn-icon btn-sm" onclick="openGoalDetail('${goal.id}')" title="History" style="margin-left:auto">i</button>
@@ -2981,12 +3187,14 @@ function clearAllData() {
 }
 
 function applyTheme(theme) {
-  document.documentElement.setAttribute("data-theme", theme);
+  // "" = auto — resolve from OS preference without saving an explicit choice
+  const resolved = theme || (window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", resolved);
   const sunPath = "M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z";
   const moonPath = "M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z";
   const themeIcon = document.getElementById("themeIcon");
-  if (themeIcon) themeIcon.setAttribute("d", theme === "dark" ? sunPath : moonPath);
-  S.settings.theme = theme;
+  if (themeIcon) themeIcon.setAttribute("d", resolved === "dark" ? sunPath : moonPath);
+  S.settings.theme = theme; // store the preference ("", "light", or "dark") — not the resolved value
   if (currentUser) save();
 }
 
@@ -3962,6 +4170,7 @@ async function initFirebaseAuth() {
         aiOpen = false;
         activeNotebookId = null;
         noteFilter = "notebook";
+        notebookSearch = "";
         flashcardDeckId = null;
         flashcardStudyMode = false;
         flashcardFlipped = false;
