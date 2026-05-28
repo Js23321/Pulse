@@ -138,10 +138,14 @@ let goalFilter = "all";
 let noteFilter = "notebook";
 let noteSearch = "";
 let activeNotebookId = null; // which notebook is open in the editor
-let flashcardDeckId = null;   // deck being studied/managed
+let flashcardDeckId = null;     // deck being studied/managed
 let flashcardCardIndex = 0;
 let flashcardFlipped = false;
 let flashcardStudyMode = false;
+let flashcardAnswers = {};      // { [cardIndex]: true=correct, false=wrong }
+let flashcardSessionDone = false;
+let flashcardStartTime = null;
+let flashcardSubset = null;     // null=all cards, array of indices=retry subset
 let aiOpen = false;
 let aiLoading = false;
 let aiPanelMode = "page";
@@ -542,8 +546,16 @@ async function doSignUp(username, pw) {
       const clean = username.trim();
       const cred = await fb.authApi.createUserWithEmailAndPassword(fb.auth, clean, pw);
       // Send verification email — Firebase handles delivery, no SMTP needed
-      try { await fb.authApi.sendEmailVerification(cred.user); } catch {}
-      return { uid: cred.user.uid, username: cred.user.email || clean, email: cred.user.email || clean, needsVerification: true };
+      let emailSent = false;
+      let emailError = null;
+      try {
+        await fb.authApi.sendEmailVerification(cred.user);
+        emailSent = true;
+      } catch (e) {
+        emailError = e?.message || String(e);
+        console.error("sendEmailVerification failed:", emailError);
+      }
+      return { uid: cred.user.uid, username: cred.user.email || clean, email: cred.user.email || clean, needsVerification: true, emailSent, emailError };
     } catch (error) {
       return { error: firebaseAuthError(error) };
     }
@@ -669,6 +681,12 @@ async function submitAuth() {
     currentUser = result;
     S = migrateState(loadUD(currentUser.uid) || defaultState());
     showApp();
+  } else if (result.needsVerification) {
+    // onAuthStateChanged will call showVerifyScreen — just surface email status
+    if (result.emailError) {
+      toast("Account created but couldn't send verification email: " + result.emailError);
+    }
+    // emailSent === true is the happy path — verify screen appears via onAuthStateChanged
   }
   btn.disabled = false;
   btn.textContent = authMode === "in" ? "Sign in" : "Create account";
@@ -687,6 +705,7 @@ function showApp() {
   syncAuthUI();
   document.getElementById("bootScreen").classList.add("hidden");
   document.getElementById("authScreen").classList.add("hidden");
+  document.getElementById("verifyScreen")?.classList.add("hidden");
   document.getElementById("appWrap").classList.remove("hidden");
   document.getElementById("mobNav").classList.remove("hidden");
   applyTheme(S.settings.theme || "light");
@@ -782,6 +801,10 @@ async function signOut() {
   flashcardDeckId = null;
   flashcardStudyMode = false;
   flashcardFlipped = false;
+  flashcardAnswers = {};
+  flashcardSessionDone = false;
+  flashcardStartTime = null;
+  flashcardSubset = null;
   document.getElementById("aiPanel").classList.remove("open");
   document.getElementById("appWrap").classList.remove("ai-open");
   closeModal();
@@ -1534,20 +1557,35 @@ function renderFlashcardManage(decks) {
 }
 
 function renderFlashcardStudy(deck) {
-  const card = deck.cards[flashcardCardIndex];
-  const isLast = flashcardCardIndex === deck.cards.length - 1;
+  if (flashcardSessionDone) return renderFlashcardSummary(deck);
+
+  const cards = flashcardSubset
+    ? flashcardSubset.map((i) => deck.cards[i]).filter(Boolean)
+    : deck.cards;
+  const card = cards[flashcardCardIndex];
+  if (!card) { flashcardSessionDone = true; return renderFlashcardSummary(deck); }
+
   const isFirst = flashcardCardIndex === 0;
+  const isLast  = flashcardCardIndex === cards.length - 1;
+  const answered = flashcardAnswers[flashcardCardIndex] !== undefined;
+  const correctSoFar = Object.values(flashcardAnswers).filter(Boolean).length;
+  const wrongSoFar   = Object.values(flashcardAnswers).filter((v) => v === false).length;
+  const progressPct  = Math.round((flashcardCardIndex / cards.length) * 100);
+
   return `
     <div class="workspace-tool surface-card">
       <div class="workspace-tool-head">
         <div>
-          <div class="workspace-tool-title">${esc(deck.name)}</div>
-          <div class="workspace-tool-sub">${flashcardCardIndex + 1} of ${deck.cards.length} cards</div>
+          <div class="workspace-tool-title">${esc(deck.name)}${flashcardSubset ? ' <span style="font-size:11px;color:var(--accent);font-weight:600">RETRY</span>' : ""}</div>
+          <div class="workspace-tool-sub">${flashcardCardIndex + 1} / ${cards.length} &nbsp;·&nbsp; <span style="color:#0c9b6b">✓ ${correctSoFar}</span> &nbsp;<span style="color:#e05252">✗ ${wrongSoFar}</span></div>
         </div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-ghost btn-sm" onclick="shuffleFlashcards('${deck.id}')">Shuffle</button>
           <button class="btn btn-ghost btn-sm" onclick="exitFlashcardStudy()">Exit</button>
         </div>
+      </div>
+      <div class="fc-progress-wrap">
+        <div class="fc-progress-bar" style="width:${progressPct}%"></div>
       </div>
       <div class="fc-card-wrap" onclick="flipFlashcard()">
         <div class="fc-card${flashcardFlipped ? " flipped" : ""}">
@@ -1564,7 +1602,87 @@ function renderFlashcardStudy(deck) {
       </div>
       <div class="fc-nav">
         <button class="btn btn-ghost btn-sm" onclick="prevFlashcard()" ${isFirst ? "disabled" : ""}>← Prev</button>
-        <button class="btn btn-ghost btn-sm" onclick="nextFlashcard('${deck.id}')" ${isLast ? "disabled" : ""}>Next →</button>
+        ${answered
+          ? `<button class="btn btn-outline btn-sm" onclick="${isLast ? "flashcardShowSummary()" : `nextFlashcard('${deck.id}')`}">
+               ${isLast ? "See results →" : "Next →"}
+             </button>`
+          : `<div class="fc-answer-btns">
+               <button class="btn fc-wrong-btn" onclick="answerFlashcard('${deck.id}', false)">✗ Wrong</button>
+               <button class="btn fc-correct-btn" onclick="answerFlashcard('${deck.id}', true)">✓ Got it</button>
+             </div>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderFlashcardSummary(deck) {
+  const cards = flashcardSubset
+    ? flashcardSubset.map((i) => deck.cards[i]).filter(Boolean)
+    : deck.cards;
+  const total   = cards.length;
+  const correct = Object.values(flashcardAnswers).filter(Boolean).length;
+  const wrong   = total - correct;
+  const pct     = total ? Math.round((correct / total) * 100) : 0;
+
+  const elapsed = flashcardStartTime ? Math.round((Date.now() - flashcardStartTime) / 1000) : 0;
+  const timeStr = elapsed >= 60
+    ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
+    : `${elapsed}s`;
+
+  const grade = pct === 100 ? "Perfect! 🎉" : pct >= 80 ? "Great work! 🙌" : pct >= 60 ? "Good effort 💪" : pct >= 40 ? "Keep at it 📖" : "Needs practice 🔁";
+
+  const correctCards = cards.filter((_, i) => flashcardAnswers[i] === true);
+  const wrongCards   = cards.filter((_, i) => flashcardAnswers[i] === false);
+
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="fc-summary">
+        <div class="fc-summary-grade">${grade}</div>
+        <div class="fc-summary-score">${correct}<span class="fc-summary-denom">/${total}</span></div>
+        <div class="fc-summary-pct">${pct}% correct &nbsp;·&nbsp; ${timeStr} &nbsp;·&nbsp; ${total} card${total !== 1 ? "s" : ""}</div>
+        <div class="fc-summary-bar-wrap">
+          <div class="fc-summary-bar-fill" style="width:${pct}%"></div>
+        </div>
+        <div class="fc-summary-stats">
+          <div class="fc-stat fc-stat-correct">
+            <div class="fc-stat-num">${correct}</div>
+            <div class="fc-stat-label">Correct</div>
+          </div>
+          <div class="fc-stat fc-stat-wrong">
+            <div class="fc-stat-num">${wrong}</div>
+            <div class="fc-stat-label">Wrong</div>
+          </div>
+          <div class="fc-stat">
+            <div class="fc-stat-num">${pct}%</div>
+            <div class="fc-stat-label">Score</div>
+          </div>
+          <div class="fc-stat">
+            <div class="fc-stat-num">${timeStr}</div>
+            <div class="fc-stat-label">Time</div>
+          </div>
+        </div>
+        ${wrongCards.length > 0 ? `
+          <div class="fc-summary-section">
+            <div class="fc-summary-section-hd fc-section-wrong">✗ Needs review (${wrongCards.length})</div>
+            <div class="fc-summary-items">
+              ${wrongCards.map((c) => `<div class="fc-summary-item fc-item-wrong">${esc(c.front)}</div>`).join("")}
+            </div>
+          </div>
+        ` : ""}
+        ${correctCards.length > 0 ? `
+          <div class="fc-summary-section">
+            <div class="fc-summary-section-hd fc-section-correct">✓ Got it (${correctCards.length})</div>
+            <div class="fc-summary-items">
+              ${correctCards.map((c) => `<div class="fc-summary-item fc-item-correct">${esc(c.front)}</div>`).join("")}
+            </div>
+          </div>
+        ` : ""}
+        <div class="fc-summary-actions">
+          ${wrongCards.length > 0 ? `<button class="btn btn-primary btn-sm" onclick="retryWrongCards('${deck.id}')">Retry wrong (${wrongCards.length})</button>` : ""}
+          <button class="btn btn-outline btn-sm" onclick="startFlashcardStudy('${deck.id}')">Restart deck</button>
+          <button class="btn btn-ghost btn-sm" onclick="exitFlashcardStudy()">Exit</button>
+        </div>
       </div>
     </div>
   `;
@@ -1641,24 +1759,74 @@ function deleteFlashcardDeck(id) {
   if (!deck) return;
   if (!confirm(`Delete "${deck.name}" and all ${deck.cards.length} card${deck.cards.length !== 1 ? "s" : ""}?`)) return;
   S.tools.flashcardDecks = S.tools.flashcardDecks.filter((d) => d.id !== id);
-  if (flashcardDeckId === id) { flashcardDeckId = null; flashcardStudyMode = false; }
+  if (flashcardDeckId === id) {
+    flashcardDeckId = null; flashcardStudyMode = false;
+    flashcardAnswers = {}; flashcardSessionDone = false;
+    flashcardStartTime = null; flashcardSubset = null;
+  }
   save();
   rerenderPage();
   toast("Deck deleted");
 }
 
 function startFlashcardStudy(deckId) {
-  flashcardDeckId = deckId;
+  flashcardDeckId    = deckId;
   flashcardCardIndex = 0;
-  flashcardFlipped = false;
+  flashcardFlipped   = false;
   flashcardStudyMode = true;
+  flashcardAnswers   = {};
+  flashcardSessionDone = false;
+  flashcardStartTime = Date.now();
+  flashcardSubset    = null;
   rerenderPage();
 }
 
 function exitFlashcardStudy() {
-  flashcardStudyMode = false;
-  flashcardFlipped = false;
+  flashcardStudyMode   = false;
+  flashcardFlipped     = false;
+  flashcardAnswers     = {};
+  flashcardSessionDone = false;
+  flashcardStartTime   = null;
+  flashcardSubset      = null;
   rerenderPage();
+}
+
+function flashcardShowSummary() {
+  flashcardSessionDone = true;
+  rerenderPage();
+}
+
+function answerFlashcard(deckId, correct) {
+  flashcardAnswers[flashcardCardIndex] = correct;
+  const deck = getFlashcardDecks().find((d) => d.id === deckId);
+  if (!deck) return;
+  const cards = flashcardSubset
+    ? flashcardSubset.map((i) => deck.cards[i]).filter(Boolean)
+    : deck.cards;
+  if (flashcardCardIndex >= cards.length - 1) {
+    flashcardSessionDone = true;
+  } else {
+    flashcardCardIndex++;
+    flashcardFlipped = false;
+  }
+  rerenderPage();
+}
+
+function retryWrongCards(deckId) {
+  const deck = getFlashcardDecks().find((d) => d.id === deckId);
+  if (!deck) return;
+  const wrongIdxs = Object.keys(flashcardAnswers)
+    .filter((i) => flashcardAnswers[Number(i)] === false)
+    .map(Number);
+  // Map back through any existing subset so we keep original deck indices
+  flashcardSubset      = flashcardSubset ? wrongIdxs.map((i) => flashcardSubset[i]).filter((v) => v !== undefined) : wrongIdxs;
+  flashcardCardIndex   = 0;
+  flashcardAnswers     = {};
+  flashcardFlipped     = false;
+  flashcardSessionDone = false;
+  flashcardStartTime   = Date.now();
+  rerenderPage();
+  toast(`Retrying ${wrongIdxs.length} card${wrongIdxs.length !== 1 ? "s" : ""}`);
 }
 
 function flipFlashcard() {
@@ -1671,7 +1839,9 @@ function flipFlashcard() {
 
 function nextFlashcard(deckId) {
   const deck = getFlashcardDecks().find((d) => d.id === deckId);
-  if (!deck || flashcardCardIndex >= deck.cards.length - 1) return;
+  if (!deck) return;
+  const cards = flashcardSubset ? flashcardSubset.map((i) => deck.cards[i]).filter(Boolean) : deck.cards;
+  if (flashcardCardIndex >= cards.length - 1) return;
   flashcardCardIndex++;
   flashcardFlipped = false;
   rerenderPage();
@@ -1691,11 +1861,15 @@ function shuffleFlashcards(deckId) {
     const j = Math.floor(Math.random() * (i + 1));
     [deck.cards[i], deck.cards[j]] = [deck.cards[j], deck.cards[i]];
   }
-  flashcardCardIndex = 0;
-  flashcardFlipped = false;
+  flashcardCardIndex   = 0;
+  flashcardFlipped     = false;
+  flashcardAnswers     = {};
+  flashcardSessionDone = false;
+  flashcardStartTime   = Date.now();
+  flashcardSubset      = null;
   save();
   rerenderPage();
-  toast("Deck shuffled");
+  toast("Deck shuffled — fresh session started");
 }
 
 function renderPomodoroTimerCard() {
@@ -2643,7 +2817,14 @@ function createNotebook() {
 }
 
 function switchNotebook(id) {
+  // Auto-save current notebook content before switching
+  const bodyEl = document.getElementById("notebookBody");
+  if (bodyEl) {
+    const current = getActiveNotebook();
+    if (current) current.content = bodyEl.value;
+  }
   activeNotebookId = id;
+  save();
   rerenderPage();
 }
 
@@ -3779,6 +3960,15 @@ async function initFirebaseAuth() {
         S = defaultState();
         lastRemoteStateJSON = "";
         aiOpen = false;
+        activeNotebookId = null;
+        noteFilter = "notebook";
+        flashcardDeckId = null;
+        flashcardStudyMode = false;
+        flashcardFlipped = false;
+        flashcardAnswers = {};
+        flashcardSessionDone = false;
+        flashcardStartTime = null;
+        flashcardSubset = null;
         document.getElementById("aiPanel").classList.remove("open");
         document.getElementById("appWrap").classList.remove("ai-open");
         closeModal();

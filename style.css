@@ -3262,6 +3262,216 @@ select.form-input {
   margin-top: 4px;
 }
 
+/* ── Flashcard progress bar ──────────────────────────────────────────────── */
+
+.fc-progress-wrap {
+  height: 4px;
+  background: var(--border);
+  border-radius: 99px;
+  margin: 8px 0 14px;
+  overflow: hidden;
+}
+
+.fc-progress-bar {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 99px;
+  transition: width 0.3s ease;
+}
+
+/* ── Flashcard answer buttons ────────────────────────────────────────────── */
+
+.fc-answer-btns {
+  display: flex;
+  gap: 10px;
+}
+
+.fc-wrong-btn {
+  background: #fef2f2;
+  color: #e05252;
+  border: 1.5px solid #fca5a5;
+  border-radius: 10px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.fc-wrong-btn:hover {
+  background: #fee2e2;
+  transform: scale(1.03);
+}
+.fc-wrong-btn:active { transform: scale(0.97); }
+
+.fc-correct-btn {
+  background: #f0fdf4;
+  color: #0c9b6b;
+  border: 1.5px solid #6ee7b7;
+  border-radius: 10px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.fc-correct-btn:hover {
+  background: #dcfce7;
+  transform: scale(1.03);
+}
+.fc-correct-btn:active { transform: scale(0.97); }
+
+/* Dark-mode overrides for answer buttons */
+[data-theme="dark"] .fc-wrong-btn {
+  background: rgba(224, 82, 82, 0.12);
+  border-color: rgba(224, 82, 82, 0.3);
+}
+[data-theme="dark"] .fc-correct-btn {
+  background: rgba(12, 155, 107, 0.12);
+  border-color: rgba(12, 155, 107, 0.3);
+}
+
+/* ── Flashcard session summary ───────────────────────────────────────────── */
+
+.fc-summary {
+  padding: 8px 0 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 6px;
+}
+
+.fc-summary-grade {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text2);
+  letter-spacing: 0.01em;
+}
+
+.fc-summary-score {
+  font-size: 52px;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.04em;
+  line-height: 1;
+  margin: 4px 0 2px;
+}
+
+.fc-summary-denom {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text3);
+}
+
+.fc-summary-pct {
+  font-size: 13px;
+  color: var(--text2);
+  margin-bottom: 6px;
+}
+
+.fc-summary-bar-wrap {
+  width: 100%;
+  height: 8px;
+  background: var(--border);
+  border-radius: 99px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.fc-summary-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), #0c9b6b);
+  border-radius: 99px;
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.fc-summary-stats {
+  display: flex;
+  gap: 12px;
+  margin: 4px 0 16px;
+  width: 100%;
+  justify-content: center;
+}
+
+.fc-stat {
+  flex: 1;
+  max-width: 90px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.fc-stat-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+
+.fc-stat-label {
+  font-size: 11px;
+  color: var(--text3);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.fc-stat-correct .fc-stat-num { color: #0c9b6b; }
+.fc-stat-wrong   .fc-stat-num { color: #e05252; }
+
+.fc-summary-section {
+  width: 100%;
+  margin-bottom: 6px;
+  text-align: left;
+}
+
+.fc-summary-section-hd {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fc-section-wrong   { color: #e05252; }
+.fc-section-correct { color: #0c9b6b; }
+
+.fc-summary-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fc-summary-item {
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  color: var(--text2);
+  line-height: 1.4;
+}
+
+.fc-item-wrong   { background: rgba(224, 82, 82, 0.07);  border-left: 3px solid #e05252; }
+.fc-item-correct { background: rgba(12, 155, 107, 0.07); border-left: 3px solid #0c9b6b; }
+
+.fc-summary-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  width: 100%;
+}
+
 /* ── General polish ──────────────────────────────────────────────────────── */
 
 /* Section label spacing */

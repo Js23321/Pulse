@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full bleed background for maskable (no rounded corners — OS clips it) -->
+  <rect width="512" height="512" fill="#4b6ef6"/>
+  <!-- Safe zone: content inside central ~80% (410px) -->
+  <text
+    x="256"
+    y="310"
+    font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
+    font-size="220"
+    font-weight="800"
+    fill="white"
+    text-anchor="middle"
+    letter-spacing="-10"
+  >p</text>
+  <circle cx="348" cy="308" r="22" fill="#a5b4fc"/>
+</svg>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Rounded square background -->
+  <rect width="512" height="512" rx="110" fill="#4b6ef6"/>
+  <!-- Pulse wordmark: "p." -->
+  <text
+    x="256"
+    y="310"
+    font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
+    font-size="220"
+    font-weight="800"
+    fill="white"
+    text-anchor="middle"
+    letter-spacing="-10"
+  >p</text>
+  <!-- Accent dot -->
+  <circle cx="348" cy="308" r="22" fill="#a5b4fc"/>
+</svg>
