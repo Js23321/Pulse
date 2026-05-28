@@ -135,8 +135,13 @@ let authMode = "in";
 let curPage = "dashboard";
 let habFilter = "all";
 let goalFilter = "all";
-let noteFilter = "all";
+let noteFilter = "notebook";
 let noteSearch = "";
+let activeNotebookId = null; // which notebook is open in the editor
+let flashcardDeckId = null;   // deck being studied/managed
+let flashcardCardIndex = 0;
+let flashcardFlipped = false;
+let flashcardStudyMode = false;
 let aiOpen = false;
 let aiLoading = false;
 let aiPanelMode = "page";
@@ -215,7 +220,7 @@ function defaultState() {
         running: false,
         currentIndex: 0,
         phase: "work",
-        remaining: 45,
+        remaining: 300,
         exercises: [
           { name: "Warm-up", work: 300, rest: 30 },
           { name: "Main set", work: 45, rest: 60 },
@@ -233,6 +238,7 @@ function defaultState() {
         running: false,
       },
       studyChecklist: [],
+      flashcardDecks: [],
     },
     settings: {
       name: "",
@@ -253,20 +259,26 @@ function migrateState(state) {
     })
     .filter(Boolean);
 
-  const existingNotebook = rawNotes.find((note) => note.kind === "notebook_doc");
-  const notebookDoc = existingNotebook || {
-    id: "notebook-main",
-    kind: "notebook_doc",
-    title: "Notebook",
-    content: legacyNotebookBits.join("\n\n"),
-    category: "general",
-    goalId: "",
-    goalName: "",
-    createdAt: Date.now(),
-  };
+  // Keep all existing notebook docs. For legacy users who had content in the old
+  // single-notebook system, migrate it into one notebook_doc. New users start with zero.
+  const existingNotebooks = rawNotes.filter((note) => note.kind === "notebook_doc");
+  const notebookDocs = existingNotebooks.length > 0
+    ? existingNotebooks
+    : legacyNotebookBits.length > 0
+      ? [{
+          id: "notebook-main",
+          kind: "notebook_doc",
+          title: "Notebook",
+          content: legacyNotebookBits.join("\n\n"),
+          category: "general",
+          goalId: "",
+          goalName: "",
+          createdAt: Date.now(),
+        }]
+      : []; // brand-new user — no notebooks until they create one
 
   const notes = [
-    notebookDoc,
+    ...notebookDocs,
     ...rawNotes
       .filter((note) => note.kind === "activity")
       .map((note) => ({
@@ -281,7 +293,7 @@ function migrateState(state) {
       })),
   ];
 
-  return {
+  const migrated = {
     habits: state.habits || [],
     goals: state.goals || [],
     notes,
@@ -295,7 +307,7 @@ function migrateState(state) {
         running: Boolean(state.tools?.workoutTimer?.running),
         currentIndex: Math.max(0, Number(state.tools?.workoutTimer?.currentIndex) || 0),
         phase: state.tools?.workoutTimer?.phase === "rest" ? "rest" : "work",
-        remaining: Math.max(1, Number(state.tools?.workoutTimer?.remaining) || 45),
+        remaining: Math.max(1, Number(state.tools?.workoutTimer?.remaining) || 300),
         exercises: Array.isArray(state.tools?.workoutTimer?.exercises) && state.tools.workoutTimer.exercises.length
           ? state.tools.workoutTimer.exercises.map((exercise, index) => ({
               name: String(exercise?.name || `Exercise ${index + 1}`),
@@ -321,12 +333,37 @@ function migrateState(state) {
             done: false,
           }))
         : [],
+      flashcardDecks: Array.isArray(state.tools?.flashcardDecks)
+        ? state.tools.flashcardDecks.map((deck) => ({
+            id: deck.id || ("fd" + Date.now() + Math.random().toString(36).slice(2, 5)),
+            name: String(deck.name || "Untitled Deck"),
+            createdAt: deck.createdAt || Date.now(),
+            cards: Array.isArray(deck.cards)
+              ? deck.cards.map((card) => ({
+                  id: card.id || ("fc" + Date.now() + Math.random().toString(36).slice(2, 5)),
+                  front: String(card.front || ""),
+                  back: String(card.back || ""),
+                }))
+              : [],
+          }))
+        : [],
     },
     settings: {
       name: state.settings?.name || "",
       theme: state.settings?.theme || "light",
     },
   };
+
+  // When the workout timer isn't actively running, snap remaining to the full
+  // duration of the current exercise/phase so the display is always clean on load.
+  // This prevents stale mid-countdown values from persisting across sessions.
+  if (!migrated.tools.workoutTimer.running) {
+    const wt = migrated.tools.workoutTimer;
+    const ex = wt.exercises[Math.min(wt.currentIndex, wt.exercises.length - 1)];
+    if (ex) wt.remaining = wt.phase === "rest" ? Math.max(1, ex.rest) : ex.work;
+  }
+
+  return migrated;
 }
 
 function save() {
@@ -504,7 +541,9 @@ async function doSignUp(username, pw) {
       const fb = await ensureFirebase();
       const clean = username.trim();
       const cred = await fb.authApi.createUserWithEmailAndPassword(fb.auth, clean, pw);
-      return { uid: cred.user.uid, username: cred.user.email || clean, email: cred.user.email || clean };
+      // Send verification email — Firebase handles delivery, no SMTP needed
+      try { await fb.authApi.sendEmailVerification(cred.user); } catch {}
+      return { uid: cred.user.uid, username: cred.user.email || clean, email: cred.user.email || clean, needsVerification: true };
     } catch (error) {
       return { error: firebaseAuthError(error) };
     }
@@ -641,6 +680,7 @@ function showAuth() {
   document.getElementById("authScreen").classList.remove("hidden");
   document.getElementById("appWrap").classList.add("hidden");
   document.getElementById("mobNav").classList.add("hidden");
+  document.getElementById("verifyScreen")?.classList.add("hidden");
 }
 
 function showApp() {
@@ -658,11 +698,71 @@ function showApp() {
   if (getStudyTimer().running) runStudyTimer();
 }
 
+function showVerifyScreen(email) {
+  document.getElementById("bootScreen").classList.add("hidden");
+  document.getElementById("authScreen").classList.add("hidden");
+  document.getElementById("appWrap").classList.add("hidden");
+  document.getElementById("mobNav")?.classList.add("hidden");
+  const vs = document.getElementById("verifyScreen");
+  if (vs) vs.classList.remove("hidden");
+  const emailEl = document.getElementById("verifyEmail");
+  if (emailEl) emailEl.textContent = email || "";
+}
+
+async function checkVerification() {
+  const fb = await ensureFirebase();
+  if (!fb) return;
+  const user = fb.auth.currentUser;
+  if (!user) return showAuth();
+  try {
+    await user.reload();
+    if (user.emailVerified) {
+      currentUser = mapFirebaseUser(user);
+      S = await startRemoteStateSync(user.uid);
+      showApp();
+    } else {
+      toast("Not verified yet — check your inbox and click the link");
+    }
+  } catch {
+    toast("Could not check verification — try again");
+  }
+}
+
+async function resendVerification() {
+  const fb = await ensureFirebase();
+  if (!fb) return;
+  const user = fb.auth.currentUser;
+  if (!user) return;
+  try {
+    await fb.authApi.sendEmailVerification(user);
+    toast("Verification email resent — check your inbox");
+  } catch {
+    toast("Could not resend — wait a minute and try again");
+  }
+}
+
 async function signOut() {
   clearPendingSave();
+
+  // ── Stop timers and save running:false BEFORE the session is torn down.
+  // This prevents "auto-start on next login" caused by a previous save
+  // (e.g. checking a habit) having captured running:true in storage.
+  getPomodoroTimer().running = false;
+  getStudyTimer().running  = false;
+  getWorkoutTimer().running = false;
   clearStudyTimerTick();
   clearWorkoutTimerTick();
   clearPomodoroTimerTick();
+
+  // Flush stopped state to storage while we still have a valid session
+  if (currentUser) {
+    if (!isFirebaseConfigured()) {
+      saveUD(currentUser.uid, sanitizeStateForSave(S)); // synchronous localStorage write
+    } else {
+      try { await saveRemoteStateNow(); } catch {} // best-effort Firebase write
+    }
+  }
+
   stopRemoteStateSync();
   if (isFirebaseConfigured()) {
     try {
@@ -677,6 +777,11 @@ async function signOut() {
   currentUser = null;
   S = defaultState();
   aiOpen = false;
+  activeNotebookId = null;
+  noteFilter = "notebook";
+  flashcardDeckId = null;
+  flashcardStudyMode = false;
+  flashcardFlipped = false;
   document.getElementById("aiPanel").classList.remove("open");
   document.getElementById("appWrap").classList.remove("ai-open");
   closeModal();
@@ -794,27 +899,25 @@ function activityNotes() {
 }
 
 function getNotebookDoc() {
-  let notebook = S.notes.find((note) => note.kind === "notebook_doc");
-  if (!notebook) {
-    notebook = {
-      id: "notebook-main",
-      kind: "notebook_doc",
-      title: "Notebook",
-      content: "",
-      category: "general",
-      goalId: "",
-      goalName: "",
-      createdAt: Date.now(),
-    };
-    S.notes.unshift(notebook);
+  // Returns the first notebook doc, or null if no notebooks exist yet.
+  return S.notes.find((note) => note.kind === "notebook_doc") || null;
+}
+
+function getActiveNotebook() {
+  // Returns the currently selected notebook by ID, falling back to the first one.
+  if (activeNotebookId) {
+    const nb = S.notes.find((n) => n.kind === "notebook_doc" && n.id === activeNotebookId);
+    if (nb) return nb;
   }
-  return notebook;
+  const first = S.notes.find((n) => n.kind === "notebook_doc");
+  if (first) activeNotebookId = first.id;
+  return first || null;
 }
 
 function noteMatchesFilter(note) {
-  if (note.kind === "notebook_doc") return false; // always shown in the composer above
-  if (noteFilter === "all") return true;
-  return note.kind === noteFilter;
+  if (noteFilter === "notebook") return note.kind === "notebook_doc";
+  if (noteFilter === "activity") return note.kind === "activity";
+  return note.kind === "notebook_doc" || note.kind === "activity";
 }
 
 function renderCurrentPage(animated = false) {
@@ -944,6 +1047,7 @@ function toggleStudyTimer() {
   if (timer.running && timer.remaining <= 0) timer.remaining = timer.duration * 60;
   if (timer.running) runStudyTimer();
   else clearStudyTimerTick();
+  save(); // persist running state so refresh restores it correctly
   syncStudyTimerUI();
 }
 
@@ -955,17 +1059,29 @@ function resetStudyTimer() {
   syncStudyTimerUI();
 }
 
+function getWorkoutTotalDuration(timer) {
+  return timer.exercises.reduce((sum, ex) => sum + ex.work + (ex.rest || 0), 0);
+}
+
 function syncWorkoutTimerUI() {
   const timer = getWorkoutTimer();
   const current = timer.exercises[timer.currentIndex] || timer.exercises[0];
   const display = document.getElementById("workoutTimerDisplay");
+  const intervalLabel = document.getElementById("workoutIntervalLabel");
   const status = document.getElementById("workoutTimerStatus");
   const currentLabel = document.getElementById("workoutCurrentLabel");
   const toggle = document.getElementById("workoutTimerToggle");
+  const totalEl = document.getElementById("workoutTotalTime");
   if (display) display.textContent = fmtTimer(timer.remaining);
-  if (status) status.textContent = timer.phase === "rest" ? "Rest interval" : "Work interval";
-  if (currentLabel) currentLabel.textContent = current ? `${current.name} · ${timer.phase}` : "No exercise selected";
+  if (intervalLabel) intervalLabel.textContent = timer.phase === "rest" ? "rest interval" : "work interval";
+  if (status) {
+    const stepNum = timer.currentIndex + 1;
+    const stepTotal = timer.exercises.length;
+    status.textContent = `Exercise ${stepNum} of ${stepTotal}`;
+  }
+  if (currentLabel) currentLabel.textContent = current ? current.name : "No exercise selected";
   if (toggle) toggle.textContent = timer.running ? "Pause" : "Start";
+  if (totalEl) totalEl.textContent = `Total: ${fmtTimer(getWorkoutTotalDuration(timer))}`;
 }
 
 function clearWorkoutTimerTick() {
@@ -1029,6 +1145,7 @@ function toggleWorkoutTimer() {
   timer.running = !timer.running;
   if (timer.running) runWorkoutTimer();
   else clearWorkoutTimerTick();
+  save(); // persist running state so refresh restores it correctly
   syncWorkoutTimerUI();
 }
 
@@ -1037,8 +1154,9 @@ function resetWorkoutTimer() {
   timer.running = false;
   timer.currentIndex = 0;
   timer.phase = "work";
-  timer.remaining = timer.exercises[0]?.work || 45;
+  timer.remaining = timer.exercises[0]?.work || 300;
   clearWorkoutTimerTick();
+  save(); // persist the reset so reload doesn't restore a stale mid-countdown value
   syncWorkoutTimerUI();
 }
 
@@ -1096,6 +1214,16 @@ function updateWorkoutExercise(index, field, value) {
   if (timer.currentIndex === index && timer.phase === "rest" && !timer.running) timer.remaining = Math.max(1, exercise.rest || 1);
   save();
   syncWorkoutTimerUI();
+  // Update the mm:ss preview label for this row without a full re-render
+  if (field === "work" || field === "rest") {
+    const rows = document.querySelectorAll(".workspace-plan-row");
+    const row = rows[index];
+    if (row) {
+      const previews = row.querySelectorAll(".workout-time-preview");
+      if (previews[0]) previews[0].textContent = fmtTimer(exercise.work);
+      if (previews[1]) previews[1].textContent = exercise.rest > 0 ? fmtTimer(exercise.rest) : "none";
+    }
+  }
 }
 
 function renderStudyTimerCard() {
@@ -1136,26 +1264,44 @@ function renderWorkoutTimerCard() {
           <div class="workspace-tool-title">Workout timer</div>
           <div class="workspace-tool-sub">Build a simple interval flow with exercise time and rest between sets.</div>
         </div>
-        <div class="workspace-timer-display" id="workoutTimerDisplay">${fmtTimer(timer.remaining)}</div>
+        <div class="workout-display-wrap">
+          <div class="workspace-timer-display" id="workoutTimerDisplay">${fmtTimer(timer.remaining)}</div>
+          <div class="workout-interval-label" id="workoutIntervalLabel">${timer.phase === "rest" ? "rest interval" : "work interval"}</div>
+        </div>
       </div>
       <div class="workspace-tool-row">
         <div>
-          <div class="workspace-tool-status" id="workoutCurrentLabel">${current ? `${current.name} - ${timer.phase}` : "No exercise selected"}</div>
-          <div class="workspace-tool-meta" id="workoutTimerStatus">${timer.phase === "rest" ? "Rest interval" : "Work interval"}</div>
+          <div class="workspace-tool-status" id="workoutCurrentLabel">${current ? current.name : "No exercise selected"}</div>
+          <div class="workspace-tool-meta" id="workoutTimerStatus">Exercise ${timer.currentIndex + 1} of ${timer.exercises.length}</div>
         </div>
-        <div class="workspace-tool-actions">
-          <button class="btn btn-outline btn-sm" id="workoutTimerToggle" onclick="toggleWorkoutTimer()">${timer.running ? "Pause" : "Start"}</button>
-          <button class="btn btn-ghost btn-sm" onclick="nextWorkoutTimerStep()">Next</button>
-          <button class="btn btn-ghost btn-sm" onclick="resetWorkoutTimer()">Reset</button>
+        <div class="workout-tool-right">
+          <div class="workout-total-time" id="workoutTotalTime">Total: ${fmtTimer(getWorkoutTotalDuration(timer))}</div>
+          <div class="workspace-tool-actions">
+            <button class="btn btn-outline btn-sm" id="workoutTimerToggle" onclick="toggleWorkoutTimer()">${timer.running ? "Pause" : "Start"}</button>
+            <button class="btn btn-ghost btn-sm" onclick="nextWorkoutTimerStep()">Next</button>
+            <button class="btn btn-ghost btn-sm" onclick="resetWorkoutTimer()">Reset</button>
+          </div>
         </div>
       </div>
       <div class="workspace-plan">
+        <div class="workspace-plan-header">
+          <span>Exercise</span>
+          <span>Work</span>
+          <span>Rest</span>
+          <span></span>
+        </div>
         ${timer.exercises.map((exercise, index) => `
           <div class="workspace-plan-row ${index === timer.currentIndex ? "active" : ""}">
             <input class="form-input" value="${esc(exercise.name)}" oninput="updateWorkoutExercise(${index}, 'name', this.value)" placeholder="Exercise name">
-            <input class="form-input" type="number" min="5" step="5" value="${exercise.work}" oninput="updateWorkoutExercise(${index}, 'work', this.value)" placeholder="Work (sec)">
-            <input class="form-input" type="number" min="0" step="5" value="${exercise.rest}" oninput="updateWorkoutExercise(${index}, 'rest', this.value)" placeholder="Rest (sec)">
-            <button class="btn btn-ghost btn-icon btn-sm" onclick="removeWorkoutExercise(${index})" title="Remove">x</button>
+            <div class="workout-time-cell">
+              <input class="form-input" type="number" min="5" step="5" value="${exercise.work}" oninput="updateWorkoutExercise(${index}, 'work', this.value)" placeholder="45">
+              <span class="workout-time-preview">${fmtTimer(exercise.work)}</span>
+            </div>
+            <div class="workout-time-cell">
+              <input class="form-input" type="number" min="0" step="5" value="${exercise.rest}" oninput="updateWorkoutExercise(${index}, 'rest', this.value)" placeholder="0">
+              <span class="workout-time-preview">${exercise.rest > 0 ? fmtTimer(exercise.rest) : "none"}</span>
+            </div>
+            <button class="btn btn-ghost btn-icon btn-sm" onclick="removeWorkoutExercise(${index})" title="Remove">×</button>
           </div>
         `).join("")}
       </div>
@@ -1337,6 +1483,221 @@ function renderChecklistCard() {
   `;
 }
 
+// ── Flashcards ───────────────────────────────────────────────────────────────
+
+function getFlashcardDecks() {
+  if (!S.tools.flashcardDecks) S.tools.flashcardDecks = [];
+  return S.tools.flashcardDecks;
+}
+
+function renderFlashcardWidget() {
+  const decks = getFlashcardDecks();
+  if (flashcardStudyMode) {
+    const deck = decks.find((d) => d.id === flashcardDeckId);
+    if (!deck || !deck.cards.length) { flashcardStudyMode = false; }
+    else return renderFlashcardStudy(deck);
+  }
+  return renderFlashcardManage(decks);
+}
+
+function renderFlashcardManage(decks) {
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="workspace-tool-head">
+        <div>
+          <div class="workspace-tool-title">Flashcards</div>
+          <div class="workspace-tool-sub">Active recall to lock in what you learn.</div>
+        </div>
+        <button class="btn btn-outline btn-sm" onclick="openNewDeckModal()">+ New deck</button>
+      </div>
+      ${decks.length === 0 ? `
+        <div class="fc-empty">No decks yet — create one to start studying.</div>
+      ` : `
+        <div class="fc-deck-list">
+          ${decks.map((deck) => `
+            <div class="fc-deck-row">
+              <div class="fc-deck-info">
+                <div class="fc-deck-name">${esc(deck.name)}</div>
+                <div class="fc-deck-meta">${deck.cards.length} card${deck.cards.length !== 1 ? "s" : ""}</div>
+              </div>
+              <div class="fc-deck-actions">
+                ${deck.cards.length > 0 ? `<button class="btn btn-outline btn-sm" onclick="startFlashcardStudy('${deck.id}')">Study →</button>` : ""}
+                <button class="btn btn-ghost btn-sm" onclick="openAddCardModal('${deck.id}')">+ Card</button>
+                <button class="btn btn-ghost btn-icon btn-sm" onclick="deleteFlashcardDeck('${deck.id}')" title="Delete deck">×</button>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function renderFlashcardStudy(deck) {
+  const card = deck.cards[flashcardCardIndex];
+  const isLast = flashcardCardIndex === deck.cards.length - 1;
+  const isFirst = flashcardCardIndex === 0;
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="workspace-tool-head">
+        <div>
+          <div class="workspace-tool-title">${esc(deck.name)}</div>
+          <div class="workspace-tool-sub">${flashcardCardIndex + 1} of ${deck.cards.length} cards</div>
+        </div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="shuffleFlashcards('${deck.id}')">Shuffle</button>
+          <button class="btn btn-ghost btn-sm" onclick="exitFlashcardStudy()">Exit</button>
+        </div>
+      </div>
+      <div class="fc-card-wrap" onclick="flipFlashcard()">
+        <div class="fc-card${flashcardFlipped ? " flipped" : ""}">
+          <div class="fc-card-face fc-card-front">
+            <div class="fc-card-label">Question</div>
+            <div class="fc-card-text">${esc(card.front)}</div>
+            <div class="fc-flip-hint">tap to reveal answer</div>
+          </div>
+          <div class="fc-card-face fc-card-back">
+            <div class="fc-card-label">Answer</div>
+            <div class="fc-card-text">${esc(card.back)}</div>
+          </div>
+        </div>
+      </div>
+      <div class="fc-nav">
+        <button class="btn btn-ghost btn-sm" onclick="prevFlashcard()" ${isFirst ? "disabled" : ""}>← Prev</button>
+        <button class="btn btn-ghost btn-sm" onclick="nextFlashcard('${deck.id}')" ${isLast ? "disabled" : ""}>Next →</button>
+      </div>
+    </div>
+  `;
+}
+
+function openNewDeckModal() {
+  modal(`
+    <div class="modal-title">New flashcard deck</div>
+    <div class="form-group">
+      <label class="form-label">Deck name</label>
+      <input id="newDeckName" class="form-input" placeholder="e.g. Biology Terms, Spanish Vocab" maxlength="60" autofocus>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="createFlashcardDeck()">Create</button>
+    </div>
+  `);
+}
+
+function createFlashcardDeck() {
+  const name = document.getElementById("newDeckName")?.value?.trim();
+  if (!name) return toast("Enter a deck name");
+  const deck = {
+    id: "fd" + Date.now() + Math.random().toString(36).slice(2, 5),
+    name,
+    createdAt: Date.now(),
+    cards: [],
+  };
+  getFlashcardDecks().push(deck);
+  save();
+  closeModal();
+  rerenderPage();
+  toast(`"${name}" created`);
+}
+
+function openAddCardModal(deckId) {
+  modal(`
+    <div class="modal-title">Add flashcard</div>
+    <div class="form-group">
+      <label class="form-label">Front — question or term</label>
+      <textarea id="fcFront" class="form-input" rows="3" placeholder="What is photosynthesis?" autofocus></textarea>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Back — answer or definition</label>
+      <textarea id="fcBack" class="form-input" rows="3" placeholder="The process plants use to convert light into energy…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="addFlashcard('${deckId}')">Add card</button>
+    </div>
+  `);
+}
+
+function addFlashcard(deckId) {
+  const front = document.getElementById("fcFront")?.value?.trim();
+  const back  = document.getElementById("fcBack")?.value?.trim();
+  if (!front) return toast("Enter the front of the card");
+  if (!back)  return toast("Enter the back of the card");
+  const deck = getFlashcardDecks().find((d) => d.id === deckId);
+  if (!deck) return;
+  deck.cards.push({
+    id: "fc" + Date.now() + Math.random().toString(36).slice(2, 5),
+    front,
+    back,
+  });
+  save();
+  closeModal();
+  rerenderPage();
+  toast("Card added");
+}
+
+function deleteFlashcardDeck(id) {
+  const deck = getFlashcardDecks().find((d) => d.id === id);
+  if (!deck) return;
+  if (!confirm(`Delete "${deck.name}" and all ${deck.cards.length} card${deck.cards.length !== 1 ? "s" : ""}?`)) return;
+  S.tools.flashcardDecks = S.tools.flashcardDecks.filter((d) => d.id !== id);
+  if (flashcardDeckId === id) { flashcardDeckId = null; flashcardStudyMode = false; }
+  save();
+  rerenderPage();
+  toast("Deck deleted");
+}
+
+function startFlashcardStudy(deckId) {
+  flashcardDeckId = deckId;
+  flashcardCardIndex = 0;
+  flashcardFlipped = false;
+  flashcardStudyMode = true;
+  rerenderPage();
+}
+
+function exitFlashcardStudy() {
+  flashcardStudyMode = false;
+  flashcardFlipped = false;
+  rerenderPage();
+}
+
+function flipFlashcard() {
+  flashcardFlipped = !flashcardFlipped;
+  const card = document.querySelector(".fc-card");
+  if (card) card.classList.toggle("flipped", flashcardFlipped);
+  const hint = document.querySelector(".fc-flip-hint");
+  if (hint) hint.style.opacity = "0";
+}
+
+function nextFlashcard(deckId) {
+  const deck = getFlashcardDecks().find((d) => d.id === deckId);
+  if (!deck || flashcardCardIndex >= deck.cards.length - 1) return;
+  flashcardCardIndex++;
+  flashcardFlipped = false;
+  rerenderPage();
+}
+
+function prevFlashcard() {
+  if (flashcardCardIndex <= 0) return;
+  flashcardCardIndex--;
+  flashcardFlipped = false;
+  rerenderPage();
+}
+
+function shuffleFlashcards(deckId) {
+  const deck = getFlashcardDecks().find((d) => d.id === deckId);
+  if (!deck) return;
+  for (let i = deck.cards.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck.cards[i], deck.cards[j]] = [deck.cards[j], deck.cards[i]];
+  }
+  flashcardCardIndex = 0;
+  flashcardFlipped = false;
+  save();
+  rerenderPage();
+  toast("Deck shuffled");
+}
+
 function renderPomodoroTimerCard() {
   const t = getPomodoroTimer();
   const phaseLabels = { work: "Focus", shortBreak: "Short break", longBreak: "Long break" };
@@ -1385,6 +1746,7 @@ function categoryWorkspacePage(categoryId) {
     ${categoryId === "study" ? renderStudyTimerCard() : ""}
     ${categoryId === "study" ? renderPomodoroTimerCard() : ""}
     ${categoryId === "study" ? renderChecklistCard() : ""}
+    ${categoryId === "study" ? renderFlashcardWidget() : ""}
     ${categoryId === "workout" ? renderWorkoutTimerCard() : ""}
 
     ${hasContent ? `
@@ -1461,12 +1823,13 @@ const PAGES = {
     const name = S.settings.name || currentUser?.username || "there";
     const streak = appStreak();
     const activeGoals = S.goals.filter((g) => goalCur(g) < g.target);
-    const notebook = getNotebookDoc();
+    const notebook = getNotebookDoc(); // may be null for new users
+    const notebookCount = S.notes.filter((n) => n.kind === "notebook_doc").length;
     const totalGoalTarget = activeGoals.reduce((sum, g) => sum + g.target, 0);
     const totalGoalDone = activeGoals.reduce((sum, g) => sum + goalCur(g), 0);
     const goalPct = totalGoalTarget ? Math.round((totalGoalDone / totalGoalTarget) * 100) : 0;
     const nextHabit = S.habits.find((h) => !(h.logs && h.logs[getTodayStr()]));
-    const latestNote = notebook.content.trim();
+    const latestNote = notebook?.content?.trim() || "";
     const focusLabel = pct >= 80 ? "Strong rhythm today" : pct >= 40 ? "Solid momentum building" : "A fresh start still counts";
     const aiCoachCopy = nextHabit
       ? `${Math.max(total - doneToday, 0)} habits are still open today. Start with ${nextHabit.name} and use Pulse AI if you want help sequencing the rest.`
@@ -1537,10 +1900,10 @@ const PAGES = {
                     </div>
                   </div>
                   <div class="dash-stat">
-                    <div class="dash-stat-kicker">Notebook</div>
+                    <div class="dash-stat-kicker">Notebooks</div>
                     <div class="dash-stat-line">
-                      <div class="dash-stat-val">${notebook.content.trim() ? 1 : 0}</div>
-                      <div class="dash-stat-text">notebook ready</div>
+                      <div class="dash-stat-val">${notebookCount}</div>
+                      <div class="dash-stat-text">${notebookCount === 1 ? "notebook" : notebookCount === 0 ? "none yet" : "notebooks"}</div>
                     </div>
                   </div>
                 </div>
@@ -1577,7 +1940,7 @@ const PAGES = {
           }
 
           ${
-            notebook.content.trim()
+            notebook?.content?.trim()
               ? `
             <div class="page-section">
               <div class="sec-hd">
@@ -1642,8 +2005,8 @@ const PAGES = {
               </div>
               <div class="dash-mini-row">
                 <div>
-                  <strong>${latestNote ? "Notebook has content" : "No notebook content yet"}</strong>
-                  <span>${latestNote ? esc(latestNote.slice(0, 72)) : "Use the notebook as your running scratchpad"}</span>
+                  <strong>${notebookCount > 0 ? `${notebookCount} notebook${notebookCount !== 1 ? "s" : ""}` : "No notebooks yet"}</strong>
+                  <span>${latestNote ? esc(latestNote.slice(0, 72)) : "Create a notebook in the Notes tab to start writing"}</span>
                 </div>
               </div>
             </div>
@@ -1720,41 +2083,91 @@ const PAGES = {
   },
 
   notes() {
-    let visible = [...S.notes].filter(noteMatchesFilter);
+    const notebookDocs = S.notes
+      .filter((n) => n.kind === "notebook_doc")
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const activities = activityNotes();
+    const activeNb = getActiveNotebook();
+
+    const tabsHtml = `
+      <div class="filter-pills">
+        <div class="fpill ${noteFilter === "notebook" ? "active" : ""}" onclick="setNoteFilter('notebook')">
+          Notes ${notebookDocs.length > 0 ? `<span class="pill-count">${notebookDocs.length}</span>` : ""}
+        </div>
+        <div class="fpill ${noteFilter === "activity" ? "active" : ""}" onclick="setNoteFilter('activity')">
+          Activity ${activities.length > 0 ? `<span class="pill-count">${activities.length}</span>` : ""}
+        </div>
+      </div>
+    `;
+
+    // ── NOTES (notebook) tab ────────────────────────────────────────────────
+    if (noteFilter === "notebook") {
+      if (notebookDocs.length === 0) {
+        return `
+          ${tabsHtml}
+          <div class="empty">
+            <div class="empty-icon">📓</div>
+            <div class="empty-title">No notebooks yet</div>
+            <div class="empty-text">Create your first notebook and start writing.</div>
+            <button class="btn btn-primary" style="margin-top:18px" onclick="openNewNotebookModal()">+ New notebook</button>
+          </div>
+        `;
+      }
+
+      return `
+        ${tabsHtml}
+        <div class="notebook-composer surface-card">
+          <div class="nb-editor-header">
+            <div class="nb-editor-title" ondblclick="editNotebookTitle('${activeNb?.id}')" title="Double-click to rename">${esc(activeNb?.title || "")}</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+              <button class="btn btn-ghost btn-sm" onclick="openNewNotebookModal()">+ New</button>
+              ${activeNb ? `<button class="btn btn-danger btn-sm" onclick="deleteNotebook('${activeNb.id}')">Delete</button>` : ""}
+            </div>
+          </div>
+          ${activeNb ? `
+            <div class="form-group" style="margin-bottom:0">
+              <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing...">${esc(activeNb.content || "")}</textarea>
+            </div>
+            <div class="composer-actions">
+              <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
+            </div>
+          ` : `<div class="nb-select-prompt">Select a notebook below to open it.</div>`}
+        </div>
+
+        <div class="nb-list">
+          ${notebookDocs.map((nb) => `
+            <div class="nb-entry${nb.id === activeNb?.id ? " active" : ""}" onclick="switchNotebook('${nb.id}')">
+              <div class="nb-entry-info">
+                <div class="nb-entry-title">${esc(nb.title)}</div>
+                <div class="nb-entry-preview">${esc((nb.content || "").slice(0, 90)) || "Empty notebook"}</div>
+              </div>
+              <div class="nb-entry-date">${fmtShortDate(nb.createdAt)}</div>
+            </div>
+          `).join("")}
+        </div>
+      `;
+    }
+
+    // ── ACTIVITY tab ────────────────────────────────────────────────────────
+    let visibleActivity = [...activities];
     if (noteSearch) {
       const q = noteSearch.toLowerCase();
-      visible = visible.filter((n) =>
+      visibleActivity = visibleActivity.filter((n) =>
         (n.title || "").toLowerCase().includes(q) ||
         (n.content || "").toLowerCase().includes(q) ||
         (n.goalName || "").toLowerCase().includes(q)
       );
     }
-    visible.sort((a, b) => b.createdAt - a.createdAt);
-
-    const notebook = getNotebookDoc();
-    const notebookCount = notebook.content.trim() ? 1 : 0;
-    const activityCount = activityNotes().length;
 
     return `
-      <div class="notebook-composer surface-card">
-        <div class="form-group" style="margin-bottom:0">
-          <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing in your notebook...">${esc(notebook.content || "")}</textarea>
-        </div>
-        <div class="composer-actions">
-          <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
-        </div>
-      </div>
-
+      ${tabsHtml}
       <div class="search-wrap">
         <svg class="search-ic" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="9" r="7"></circle><path d="m16 16-3.5-3.5"></path></svg>
-        <input class="search-input" type="text" placeholder="Search notebook and activity notes..." value="${esc(noteSearch)}" oninput="noteSearch=this.value;rerenderPage()">
+        <input class="search-input" type="text" placeholder="Search activity notes..." value="${esc(noteSearch)}" oninput="noteSearch=this.value;rerenderPage()">
       </div>
-
-
-      ${
-        visible.length
-          ? `<div class="notes-stack">${visible.map((n) => noteRow(n)).join("")}</div>`
-          : `<div class="empty"><div class="empty-icon">✎</div><div class="empty-title">${noteSearch ? "No notes found" : "No notes yet"}</div><div class="empty-text">${noteSearch ? "Try a different phrase." : "Start with a notebook entry or complete a goal and add an activity note."}</div></div>`
+      ${visibleActivity.length
+        ? `<div class="notes-stack">${visibleActivity.map((n) => noteRow(n)).join("")}</div>`
+        : `<div class="empty"><div class="empty-icon">✎</div><div class="empty-title">${noteSearch ? "No notes found" : "No activity notes yet"}</div><div class="empty-text">${noteSearch ? "Try a different phrase." : "Activity notes are created automatically when you log goal progress."}</div></div>`
       }
     `;
   },
@@ -1875,11 +2288,11 @@ function noteRow(note) {
   }
 
   return `
-    <div class="note-item notebook-entry" onclick="openEditNote('${note.id}')">
-      <div class="note-title">Notebook</div>
-      <div class="note-preview">${esc((note.content || "").slice(0, 220))}</div>
+    <div class="note-item notebook-entry" onclick="switchNotebook('${note.id}');setNoteFilter('notebook');nav('notes')">
+      <div class="note-title">${esc(note.title || "Notebook")}</div>
+      <div class="note-preview">${esc((note.content || "").slice(0, 220)) || "Empty notebook"}</div>
       <div class="note-footer">
-        <span class="note-date">${note.content ? "Tap to continue writing" : "Start your notebook"}</span>
+        <span class="note-date">${fmtShortDate(note.createdAt)}</span>
         <span class="badge badge-general">Notebook</span>
       </div>
     </div>
@@ -2187,17 +2600,113 @@ function setNoteFilter(filter) {
 function saveNotebook() {
   const bodyEl = document.getElementById("notebookBody");
   if (!bodyEl) return;
-  const notebook = getNotebookDoc();
-  notebook.content = bodyEl.value;
+  const nb = getActiveNotebook();
+  if (!nb) return toast("No notebook selected");
+  nb.content = bodyEl.value;
+  save();
+  toast("Saved");
+}
+
+function openNewNotebookModal() {
+  modal(`
+    <div class="modal-title">New notebook</div>
+    <div class="form-group">
+      <label class="form-label">Title</label>
+      <input id="newNbTitle" class="form-input" placeholder="e.g. Work ideas, Personal journal, Study notes" maxlength="60" autofocus>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="createNotebook()">Create</button>
+    </div>
+  `);
+}
+
+function createNotebook() {
+  const title = document.getElementById("newNbTitle")?.value?.trim();
+  if (!title) return toast("Enter a title for your notebook");
+  const nb = {
+    id: "nb" + Date.now() + Math.random().toString(36).slice(2, 5),
+    kind: "notebook_doc",
+    title,
+    content: "",
+    category: "general",
+    goalId: "",
+    goalName: "",
+    createdAt: Date.now(),
+  };
+  S.notes.unshift(nb);
+  activeNotebookId = nb.id;
+  save();
+  closeModal();
+  rerenderPage();
+  toast(`"${title}" created`);
+}
+
+function switchNotebook(id) {
+  activeNotebookId = id;
+  rerenderPage();
+}
+
+function editNotebookTitle(id) {
+  const nb = S.notes.find((n) => n.id === id && n.kind === "notebook_doc");
+  if (!nb) return;
+  const titleEl = document.querySelector(".nb-editor-title");
+  if (!titleEl || titleEl.dataset.editing) return;
+  titleEl.dataset.editing = "1";
+
+  const original = nb.title;
+  const input = document.createElement("input");
+  input.className = "nb-title-input";
+  input.value = original;
+  input.maxLength = 60;
+
+  let committed = false;
+  function commit() {
+    if (committed) return;
+    committed = true;
+    const newTitle = input.value.trim() || original;
+    nb.title = newTitle;
+    save();
+    delete titleEl.dataset.editing;
+    titleEl.textContent = newTitle;
+    // Also update the matching entry in the list below
+    document.querySelectorAll(".nb-entry.active .nb-entry-title").forEach((el) => {
+      el.textContent = newTitle;
+    });
+  }
+
+  input.onblur = commit;
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    if (e.key === "Escape") { input.value = original; input.blur(); }
+  };
+
+  titleEl.textContent = "";
+  titleEl.appendChild(input);
+  input.select();
+  input.focus();
+}
+
+function deleteNotebook(id) {
+  const nb = S.notes.find((n) => n.id === id && n.kind === "notebook_doc");
+  if (!nb) return;
+  if (!confirm(`Delete "${nb.title}" and all its content?`)) return;
+  S.notes = S.notes.filter((n) => n.id !== id);
+  if (activeNotebookId === id) {
+    const remaining = S.notes.find((n) => n.kind === "notebook_doc");
+    activeNotebookId = remaining?.id || null;
+  }
   save();
   rerenderPage();
-  toast("Notebook saved");
+  toast("Notebook deleted");
 }
 
 function openEditNote(id) {
   const note = S.notes.find((n) => n.id === id);
   if (!note) return;
   if (note.kind === "notebook_doc") {
+    activeNotebookId = note.id;
+    noteFilter = "notebook";
     nav("notes");
     return;
   }
@@ -2428,7 +2937,10 @@ function getAIContext(scope = "global") {
   const streak = appStreak();
   const goals = S.goals.map((g) => `${g.name}: ${Math.round((goalCur(g) / g.target) * 100)}%`).join(", ") || "none";
   const habits = S.habits.map((h) => h.name).join(", ") || "none";
-  const notebook = getNotebookDoc().content.slice(0, 180) || "none";
+  const notebookDocs = S.notes.filter((n) => n.kind === "notebook_doc");
+  const notebook = notebookDocs.length
+    ? notebookDocs.map((nb) => `[${nb.title}] ${nb.content.slice(0, 150)}`).filter((s) => s.slice(s.indexOf("]") + 2)).join(" | ") || "none"
+    : "none";
   if (scope === "page") {
     if (curPage === "habits") return `Current page: Habits. User: ${currentUser?.username}. Today: ${doneToday}/${S.habits.length} habits done. Habits: ${habits}.`;
     if (curPage === "goals") return `Current page: Goals. User: ${currentUser?.username}. Goals: ${goals}.`;
@@ -3176,11 +3688,22 @@ function executeAIAction(toolName, args) {
 
       // ── NOTES ─────────────────────────────────────────────────────────────────
       case "write_notebook": {
-        const doc = getNotebookDoc();
+        let doc = getActiveNotebook();
+        if (!doc) {
+          // Auto-create a notebook if none exists yet
+          doc = {
+            id: "nb" + Date.now() + Math.random().toString(36).slice(2, 5),
+            kind: "notebook_doc", title: "Notebook", content: "",
+            category: "general", goalId: "", goalName: "", createdAt: Date.now(),
+          };
+          S.notes.unshift(doc);
+          activeNotebookId = doc.id;
+        }
         const addition = String(args.content || "");
         doc.content = doc.content ? doc.content + "\n\n" + addition : addition;
         save();
-        return { success: true, message: "Added to notebook" };
+        rerenderPage();
+        return { success: true, message: `Added to "${doc.title}"` };
       }
 
       case "delete_note": {
@@ -3242,9 +3765,14 @@ async function initFirebaseAuth() {
     fb.authApi.onAuthStateChanged(fb.auth, async (user) => {
       clearPendingSave();
       if (user) {
-        currentUser = mapFirebaseUser(user);
-        S = await startRemoteStateSync(user.uid);
-        showApp();
+        // Block unverified users — show verify screen instead of the app
+        if (!user.emailVerified) {
+          showVerifyScreen(user.email || "");
+        } else {
+          currentUser = mapFirebaseUser(user);
+          S = await startRemoteStateSync(user.uid);
+          showApp();
+        }
       } else {
         stopRemoteStateSync();
         currentUser = null;

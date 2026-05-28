@@ -203,6 +203,33 @@
 
 </div>
 
+<!-- ── Email verification screen ─────────────────────────────────────────── -->
+<div id="verifyScreen" class="hidden">
+  <nav class="landing-nav">
+    <div class="landing-nav-inner">
+      <div class="landing-logo">pulse<span>.</span></div>
+    </div>
+  </nav>
+  <div class="verify-wrap">
+    <div class="verify-card surface-card">
+      <div class="verify-icon">📬</div>
+      <div class="verify-title">Check your inbox</div>
+      <div class="verify-sub">We sent a verification link to<br><strong id="verifyEmail" class="verify-email"></strong></div>
+      <ol class="verify-steps">
+        <li>Open the email from Pulse</li>
+        <li>Click the <strong>Verify email address</strong> link</li>
+        <li>Come back here and tap the button below</li>
+      </ol>
+      <button class="btn btn-primary" style="width:100%;justify-content:center" onclick="checkVerification()">I've verified my email →</button>
+      <div class="verify-actions">
+        <button class="btn btn-ghost btn-sm" onclick="resendVerification()">Resend email</button>
+        <span class="verify-sep">·</span>
+        <button class="btn btn-ghost btn-sm" onclick="showAuth()">Back to sign in</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="appWrap" class="app hidden">
   <aside class="sidebar">
     <div class="sidebar-top">

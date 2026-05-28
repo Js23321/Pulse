@@ -2085,6 +2085,69 @@ select.form-input {
   to   { opacity: 0; transform: translateX(10px) scaleY(0.5); max-height: 0; padding-top: 0; padding-bottom: 0; margin: 0; }
 }
 
+/* Workout timer display wrapper */
+.workout-display-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.workout-interval-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--accent);
+  text-align: right;
+}
+
+/* Right side of status row: total + buttons stacked */
+.workout-tool-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.workout-total-time {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+/* Workout plan column headers */
+.workspace-plan-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) 120px 120px auto;
+  gap: 10px;
+  padding: 0 12px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Wraps a number input + the mm:ss preview beneath it */
+.workout-time-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+
+.workout-time-preview {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  letter-spacing: 0.03em;
+  font-weight: 500;
+  line-height: 1;
+}
+
 .notebook-composer-title {
   font-size: 15px;
   font-weight: 800;
@@ -2101,7 +2164,119 @@ select.form-input {
 .composer-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   margin-top: 14px;
+}
+
+/* Notebook editor header (title + New/Delete buttons) */
+.nb-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.nb-editor-title {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text1);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nb-select-prompt {
+  font-size: 13px;
+  color: var(--text3);
+  padding: 24px 0 10px;
+  text-align: center;
+}
+
+/* Notebook list (switcher below the editor) */
+.nb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.nb-entry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-radius: 18px;
+  background: var(--surface-soft);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.nb-entry:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.nb-entry.active {
+  border-color: rgba(75, 110, 246, 0.3);
+  background: var(--accent-bg);
+}
+
+.nb-entry-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.nb-entry-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text1);
+  letter-spacing: -0.01em;
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nb-entry-preview {
+  font-size: 12px;
+  color: var(--text3);
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nb-entry-date {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Count badge inside filter pills */
+.pill-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 5px;
+  letter-spacing: 0;
+}
+
+.fpill.active .pill-count {
+  background: rgba(255,255,255,0.25);
+  color: inherit;
 }
 
 .activity-note-card {
@@ -2845,6 +3020,248 @@ select.form-input {
   animation: fadeUp 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* ── Email Verification Screen ───────────────────────────────────────────── */
+
+#verifyScreen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.verify-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+.verify-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 30px;
+  padding: 40px 36px;
+  box-shadow: var(--shadow-lg);
+  animation: fadeUp 0.28s ease both;
+  text-align: center;
+}
+
+.verify-icon {
+  font-size: 44px;
+  margin-bottom: 16px;
+  line-height: 1;
+}
+
+.verify-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.03em;
+  margin-bottom: 10px;
+}
+
+.verify-sub {
+  font-size: 14px;
+  color: var(--text2);
+  line-height: 1.55;
+  margin-bottom: 24px;
+}
+
+.verify-email {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.verify-steps {
+  text-align: left;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 16px 16px 34px;
+  margin: 0 0 24px;
+  font-size: 13.5px;
+  color: var(--text2);
+  line-height: 1.6;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.verify-steps li::marker {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.verify-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.verify-sep {
+  color: var(--text3);
+  font-size: 13px;
+  user-select: none;
+}
+
+/* ── Notebook title inline edit ─────────────────────────────────────────── */
+.nb-editor-title {
+  cursor: default;
+}
+
+.nb-title-input {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--accent);
+  outline: none;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text1);
+  width: 100%;
+  padding: 0 0 2px;
+  min-width: 120px;
+}
+
+/* ── Flashcards ──────────────────────────────────────────────────────────── */
+.fc-empty {
+  font-size: 13px;
+  color: var(--text3);
+  text-align: center;
+  padding: 28px 0 10px;
+}
+
+.fc-deck-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.fc-deck-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: var(--surface-soft);
+  border: 1px solid transparent;
+  transition: border-color 0.15s ease;
+}
+
+.fc-deck-row:hover {
+  border-color: var(--border);
+}
+
+.fc-deck-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text1);
+  letter-spacing: -0.01em;
+}
+
+.fc-deck-meta {
+  font-size: 12px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+
+.fc-deck-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* Flashcard study — the flip card */
+.fc-card-wrap {
+  margin: 16px 0 10px;
+  cursor: pointer;
+  perspective: 1200px;
+  height: 200px;
+  user-select: none;
+}
+
+.fc-card {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  transform-style: preserve-3d;
+  transition: transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.fc-card.flipped {
+  transform: rotateY(180deg);
+}
+
+.fc-card-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 24px;
+  border-radius: 18px;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  text-align: center;
+  overflow: hidden;
+}
+
+.fc-card-front {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+}
+
+.fc-card-back {
+  background: var(--accent-bg);
+  border: 1px solid rgba(75, 110, 246, 0.22);
+  transform: rotateY(180deg);
+}
+
+.fc-card-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.fc-card-text {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text1);
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+}
+
+.fc-flip-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 10px;
+  opacity: 0.65;
+  transition: opacity 0.25s;
+}
+
+.fc-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+
 /* ── General polish ──────────────────────────────────────────────────────── */
 
 /* Section label spacing */
@@ -3127,6 +3544,10 @@ select.form-input {
 
   .workspace-plan-row {
     grid-template-columns: 1fr;
+  }
+
+  .workspace-plan-header {
+    display: none;
   }
 
   .page-title {
