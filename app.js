@@ -715,14 +715,24 @@ async function sendPasswordReset() {
     });
     const data = await resp.json();
     if (!data.sent) throw new Error(data.error || "Failed");
-    document.getElementById("authErr").classList.add("hidden");
-    const foot = document.getElementById("authFoot");
-    if (foot) foot.innerHTML = `✅ Reset link sent to <strong>${email}</strong> — check your inbox.`;
+    showResetSentScreen(email);
   } catch {
     showAuthErr("Couldn't send reset email — try again in a moment.");
+    btn.disabled = false;
+    btn.textContent = "Send reset link";
   }
-  btn.disabled = false;
-  btn.textContent = "Send reset link";
+}
+
+function showResetSentScreen(email) {
+  document.getElementById("bootScreen").classList.add("hidden");
+  document.getElementById("authScreen").classList.add("hidden");
+  document.getElementById("verifyScreen")?.classList.add("hidden");
+  document.getElementById("appWrap").classList.add("hidden");
+  document.getElementById("mobNav")?.classList.add("hidden");
+  const rs = document.getElementById("resetScreen");
+  if (rs) rs.classList.remove("hidden");
+  const emailEl = document.getElementById("resetEmail");
+  if (emailEl) emailEl.textContent = email || "";
 }
 
 async function submitAuth() {
@@ -768,6 +778,26 @@ function showAuth() {
   document.getElementById("appWrap").classList.add("hidden");
   document.getElementById("mobNav").classList.add("hidden");
   document.getElementById("verifyScreen")?.classList.add("hidden");
+  document.getElementById("resetScreen")?.classList.add("hidden");
+  initLandingReveal();
+}
+
+function initLandingReveal() {
+  if (!window.IntersectionObserver) return;
+  const els = document.querySelectorAll("#authScreen [data-reveal]");
+  if (!els.length) return;
+  const obs = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((e) => {
+        if (e.isIntersecting) {
+          e.target.classList.add("revealed");
+          obs.unobserve(e.target);
+        }
+      });
+    },
+    { threshold: 0.1 }
+  );
+  els.forEach((el) => obs.observe(el));
 }
 
 function showApp() {
@@ -775,6 +805,7 @@ function showApp() {
   document.getElementById("bootScreen").classList.add("hidden");
   document.getElementById("authScreen").classList.add("hidden");
   document.getElementById("verifyScreen")?.classList.add("hidden");
+  document.getElementById("resetScreen")?.classList.add("hidden");
   document.getElementById("appWrap").classList.remove("hidden");
   document.getElementById("mobNav").classList.remove("hidden");
   applyTheme(S.settings.theme);

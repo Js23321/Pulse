@@ -410,6 +410,35 @@ button {
    MULTI-SECTION LANDING PAGE
    ================================================ */
 
+/* Hero entrance animations */
+@keyframes heroReveal {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.hero-anim-1 { animation: heroReveal 0.72s cubic-bezier(0.22, 1, 0.36, 1) 0.04s both; }
+.hero-anim-2 { animation: heroReveal 0.72s cubic-bezier(0.22, 1, 0.36, 1) 0.16s both; }
+.hero-anim-3 { animation: heroReveal 0.72s cubic-bezier(0.22, 1, 0.36, 1) 0.30s both; }
+.hero-anim-4 { animation: heroReveal 0.72s cubic-bezier(0.22, 1, 0.36, 1) 0.43s both; }
+.hero-anim-5 { animation: heroReveal 0.72s cubic-bezier(0.22, 1, 0.36, 1) 0.56s both; }
+
+/* Breathing orb */
+@keyframes orbPulse {
+  0%, 100% { transform: translateX(-50%) scale(1);    opacity: 0.75; }
+  50%       { transform: translateX(-50%) scale(1.14); opacity: 1;    }
+}
+
+/* Scroll-reveal system */
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(26px);
+  transition: opacity 0.58s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.58s cubic-bezier(0.22, 1, 0.36, 1);
+}
+[data-reveal].revealed {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .landing-hero {
   min-height: calc(100vh - 56px);
   display: flex;
@@ -431,6 +460,7 @@ button {
   height: 900px;
   background: radial-gradient(circle, rgba(63, 109, 246, 0.09), transparent 58%);
   pointer-events: none;
+  animation: orbPulse 7s ease-in-out infinite;
 }
 
 .landing-hero-inner {
@@ -669,6 +699,57 @@ button {
   font-size: 13px;
   color: var(--text3);
   line-height: 1.6;
+}
+
+/* Why it works section */
+.landing-why {
+  background: var(--surface-soft);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-why-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.landing-why-card {
+  padding: 28px 28px 30px;
+  border-radius: 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(14px);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.landing-why-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-2px);
+}
+
+.landing-why-num {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.landing-why-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.025em;
+  line-height: 1.3;
+  margin-bottom: 10px;
+}
+
+.landing-why-desc {
+  font-size: 13.5px;
+  color: var(--text3);
+  line-height: 1.65;
 }
 
 /* Auth call-to-action section */
@@ -3312,7 +3393,8 @@ select.form-input {
 
 /* ── Email Verification Screen ───────────────────────────────────────────── */
 
-#verifyScreen {
+#verifyScreen,
+#resetScreen {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
@@ -3339,6 +3421,41 @@ select.form-input {
   text-align: center;
 }
 
+.verify-icon-wrap {
+  width: 60px;
+  height: 60px;
+  border-radius: 18px;
+  background: var(--accent-bg);
+  border: 1px solid rgba(63, 109, 246, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  margin: 0 auto 20px;
+}
+
+.verify-icon-wrap--green {
+  background: rgba(21, 147, 109, 0.1);
+  border-color: rgba(21, 147, 109, 0.2);
+  color: var(--success);
+}
+
+.verify-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: var(--accent-bg);
+  border: 1px solid rgba(63, 109, 246, 0.15);
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 13px;
+  color: var(--text2);
+  line-height: 1.5;
+  text-align: left;
+  margin-top: 20px;
+}
+
+/* keep old emoji icon name working just in case */
 .verify-icon {
   font-size: 44px;
   margin-bottom: 16px;
@@ -3906,6 +4023,11 @@ select.form-input {
     grid-template-columns: 1fr 1fr;
   }
 
+  .landing-why-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
   .landing-steps-row {
     grid-template-columns: 1fr;
     gap: 20px;
@@ -4007,7 +4129,8 @@ select.form-input {
 }
 
 @media (max-width: 720px) {
-  .landing-feat-grid {
+  .landing-feat-grid,
+  .landing-why-grid {
     grid-template-columns: 1fr;
   }
 
