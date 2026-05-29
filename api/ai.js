@@ -20,11 +20,11 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  const defaultModel = process.env.OPENROUTER_MODEL || "meta-llama/llama-3.1-8b-instruct:free";
+  const apiKey = process.env.GEMINI_API_KEY;
+  const defaultModel = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
 
   if (!apiKey) {
-    res.status(500).json({ error: "Missing OPENROUTER_API_KEY" });
+    res.status(500).json({ error: "Missing GEMINI_API_KEY" });
     return;
   }
 
@@ -59,13 +59,11 @@ module.exports = async function handler(req, res) {
       }));
     }
 
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "Authorization": `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://pulse.sciencerevisions.online",
-        "X-Title": "Pulse",
       },
       body: JSON.stringify(requestBody),
     });
@@ -73,7 +71,7 @@ module.exports = async function handler(req, res) {
     const data = await response.json();
 
     if (!response.ok) {
-      res.status(500).json({ error: "OpenRouter request failed", details: data });
+      res.status(500).json({ error: "Gemini API request failed", details: data });
       return;
     }
 
@@ -93,7 +91,7 @@ module.exports = async function handler(req, res) {
     }
 
     if (!reply && actions.length === 0) {
-      res.status(500).json({ error: "Empty response from OpenRouter", details: data });
+      res.status(500).json({ error: "Empty response from Gemini", details: data });
       return;
     }
 

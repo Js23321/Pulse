@@ -1,7 +1,7 @@
 const AI_CONFIG = {
   enabled: true,
   endpoint: "/api/ai",
-  model: "meta-llama/llama-3.1-8b-instruct:free",
+  model: "gemini-3.1-flash-lite",
   personalities: {
     fullscreen: {
       identity: "You are Pulse AI, a thoughtful personal productivity coach inside the Pulse app.",
@@ -140,6 +140,7 @@ let noteFilter = "notebook";
 let noteSearch = "";
 let notebookSearch = "";
 let activeNotebookId = null; // which notebook is open in the editor
+let notebookBodyHeight = null; // persists user-resized textarea height across re-renders
 let flashcardDeckId = null;     // deck being studied/managed
 let flashcardCardIndex = 0;
 let flashcardFlipped = false;
@@ -644,9 +645,11 @@ function switchTab(mode) {
   if (authMode === mode) return;
   authMode = mode;
 
-  // Restore anything showForgotPassword() may have hidden
+  // Restore anything showForgotPassword() or showResetSentInline() may have hidden
   document.getElementById("authPassGroup")?.classList.remove("hidden");
   document.getElementById("forgotPassWrap")?.classList.remove("hidden");
+  document.getElementById("authFields")?.classList.remove("hidden");
+  document.getElementById("resetSuccessMsg")?.classList.add("hidden");
   const toggle = document.querySelector(".auth-toggle");
   if (toggle) toggle.style.visibility = "";
   const foot = document.getElementById("authFoot");
@@ -715,11 +718,27 @@ async function sendPasswordReset() {
     });
     const data = await resp.json();
     if (!data.sent) throw new Error(data.error || "Failed");
-    showResetSentScreen(email);
+    showResetSentInline(email);
   } catch {
     showAuthErr("Couldn't send reset email — try again in a moment.");
     btn.disabled = false;
     btn.textContent = "Send reset link";
+  }
+}
+
+function showResetSentInline(email) {
+  // Stay on the landing page — just swap auth card content
+  const toggle = document.querySelector(".auth-toggle");
+  if (toggle) toggle.style.visibility = "hidden";
+  const titleEl = document.getElementById("authCardTitle");
+  const subEl   = document.getElementById("authCardSubText");
+  if (titleEl) titleEl.textContent = "Check your inbox.";
+  if (subEl)   subEl.textContent   = "";
+  document.getElementById("authFields")?.classList.add("hidden");
+  const success = document.getElementById("resetSuccessMsg");
+  if (success) {
+    document.getElementById("resetSuccessEmail").textContent = email;
+    success.classList.remove("hidden");
   }
 }
 
@@ -1145,7 +1164,26 @@ function nav(page) {
 }
 
 function rerenderPage() {
+  // Preserve the notebook textarea's unsaved content and user-resized height
+  // across re-renders triggered by onSnapshot (Firebase sync echo) or saves.
+  const nbEl = document.getElementById("notebookBody");
+  const savedContent    = nbEl ? nbEl.value : null;
+  const savedHeight     = nbEl ? nbEl.style.height : null;
+  const savedNotebookId = activeNotebookId; // capture BEFORE render (switchNotebook updates it first)
+  if (savedHeight) notebookBodyHeight = savedHeight;
+
   renderCurrentPage(false);
+
+  const nbElAfter = document.getElementById("notebookBody");
+  if (nbElAfter) {
+    // Restore unsaved typed content only when the same notebook is still active.
+    // If the user switched notebooks, activeNotebookId has already changed, so
+    // savedNotebookId !== activeNotebookId and we leave the new notebook's content alone.
+    if (savedContent !== null && savedNotebookId === activeNotebookId) {
+      nbElAfter.value = savedContent;
+    }
+    if (notebookBodyHeight) nbElAfter.style.height = notebookBodyHeight;
+  }
 }
 
 function fmtTimer(totalSeconds) {
@@ -3046,7 +3084,7 @@ function habitRow(habit, dashMode) {
   const calOpen = !dashMode && openHabitCalendarId === habit.id;
   return `
     <div class="habit-item-wrap">
-      <div class="habit-item ${done ? "done" : ""}" data-habit-id="${habit.id}">
+      <div class="habit-item ${done ? "done" : ""}" data-habit-id="${habit.id}" style="border-left: 3px solid ${c.color}">
         <div
           class="hcheck ${done ? "checked" : ""}"
           style="${done ? `background:${c.color};border-color:${c.color}` : ""}"
@@ -3096,17 +3134,12 @@ function goalCard(goal) {
   return `
     <div class="goal-card ${done ? "done-card" : ""}" data-goal-id="${goal.id}">
       <div class="goal-top">
-        <div style="min-width:0">
-          <div class="goal-emoji">${goal.icon}</div>
-          <div class="goal-name">${esc(goal.name)}</div>
-          <div class="goal-prog-txt">${cur} / ${goal.target} ${esc(goal.unit)}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0">
-          <div class="goal-pct">${pct}%</div>
-          <span class="badge badge-${goal.category}" style="margin-top:6px">${c.emoji}</span>
-        </div>
+        <div class="goal-emoji">${goal.icon}</div>
+        <div class="goal-pct" style="color:${c.color}">${pct}%</div>
       </div>
-      <div class="prog-track" style="margin-top:14px"><div class="prog-fill" style="width:${pct}%;background:${c.color}"></div></div>
+      <div class="goal-name">${esc(goal.name)}</div>
+      <div class="goal-prog-txt">${cur} / ${goal.target} ${esc(goal.unit)}</div>
+      <div class="prog-track" style="margin-top:8px"><div class="prog-fill" style="width:${pct}%;background:${c.color}"></div></div>
       ${goalSparkline(goal)}
       <div class="goal-actions">
         ${done ? `<span class="goal-complete">Completed</span>` : `<button class="btn btn-sm btn-outline" onclick="openLogGoal('${goal.id}')">+ Log</button>`}
@@ -3516,6 +3549,10 @@ function editNotebookTitle(id) {
   function commit() {
     if (committed) return;
     committed = true;
+    // Snapshot current textarea content BEFORE saving, so the onSnapshot
+    // re-render echo doesn't wipe out anything the user hasn't saved yet.
+    const bodyEl = document.getElementById("notebookBody");
+    if (bodyEl) nb.content = bodyEl.value;
     const newTitle = input.value.trim() || original;
     nb.title = newTitle;
     save();
@@ -3867,6 +3904,8 @@ function buildAIMsgEl(msg) {
 function renderAIPanelMsgs() {
   const wrap = document.getElementById("aiMessages");
   if (!wrap) return;
+  // Track how many messages were already visible so we only animate new ones
+  const prevCount = wrap.querySelectorAll(".ai-msg").length;
   wrap.innerHTML = "";
   const introTitle = document.querySelector(".ai-intro-title");
   const introText = document.querySelector(".ai-intro-text");
@@ -3875,7 +3914,11 @@ function renderAIPanelMsgs() {
     ? `Pulse AI can create and edit your ${PAGE_TITLES[curPage] || "current page"} data. Destructive actions will ask for confirmation.`
     : `Ask about the ${PAGE_TITLES[curPage] || "current"} page and Pulse AI will focus on what is visible here.`;
 
-  aiPanelMsgs.forEach((msg) => wrap.appendChild(buildAIMsgEl(msg)));
+  aiPanelMsgs.forEach((msg, i) => {
+    const el = buildAIMsgEl(msg);
+    if (i < prevCount) el.style.animation = "none"; // already shown — no replay
+    wrap.appendChild(el);
+  });
 
   if (aiLoading) {
     const typing = document.createElement("div");
@@ -3887,7 +3930,7 @@ function renderAIPanelMsgs() {
   if (!getAIConfig() && !aiLoading) {
     const hint = document.createElement("div");
     hint.className = "ai-no-key";
-    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>OPENROUTER_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
+    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>GEMINI_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
     wrap.appendChild(hint);
   }
 
@@ -3911,7 +3954,7 @@ function renderAIPageMsgs() {
   if (!getAIConfig() && !aiLoading) {
     const hint = document.createElement("div");
     hint.className = "ai-no-key";
-    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>OPENROUTER_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
+    hint.innerHTML = 'Pulse AI needs the Vercel backend route. Add <b>GEMINI_API_KEY</b> in Vercel and open the app from localhost or your deployed site.';
     wrap.appendChild(hint);
   }
 
