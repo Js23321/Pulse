@@ -154,18 +154,31 @@ let aiLoading = false;
 let aiPanelMode = "page";
 let aiEditMode = false;
 let aiPendingAction = null; // { confirmId, storeKey } — one destructive action queued at a time
-let aiPanelMsgs = [
-  {
-    role: "assistant",
-    text: "I am Pulse AI. I can help with the page you are looking at right now.",
-  },
-];
-let aiPageMsgs = [
-  {
-    role: "assistant",
-    text: "I am Pulse AI. I can help across your full Pulse data, including habits, goals, activity notes, and your notebook.",
-  },
-];
+
+// ── Popup panel: one isolated chat per page ─────────────────────────────────
+// aiPanelChats[pageName] = [messages]
+// aiPanelAnimatedPages[pageName] = number of messages already animated
+let aiPanelChats = {};
+let aiPanelAnimatedPages = {};
+
+// ── Full-screen AI page: multiple saved chats ───────────────────────────────
+function _makeAIChat(id) {
+  const messages = [
+    { role: "assistant", text: "I am Pulse AI. I can help across your full Pulse data, including habits, goals, activity notes, and your notebook." },
+  ];
+  return {
+    id: id || ("chat-" + Date.now()),
+    title: "New chat",
+    isNew: true,
+    // Pre-mark initial messages as already seen so they don't animate when a
+    // new chat is created — only user-driven messages should animate.
+    _animatedCount: messages.length,
+    messages,
+  };
+}
+let aiPageChats = [_makeAIChat("chat-default")];
+let activePageChatId = aiPageChats[0].id;
+let lastCreatedChatId = null; // used to animate only the newly added tab
 let lastDashboardRingOffset = null;
 let firebaseClient = null;
 let firebaseAuthReady = null;
@@ -896,6 +909,28 @@ async function resendVerification() {
   }
 }
 
+async function deleteAccount() {
+  if (!currentUser) return toast("Not signed in");
+  if (!confirm("Permanently delete your account and ALL your data?\n\nThis cannot be undone.")) return;
+  if (!confirm("Last chance — are you absolutely sure? Everything will be gone.")) return;
+  try {
+    const fb = await ensureFirebase();
+    if (!fb) return toast("Not connected to Firebase");
+    const idToken = await fb.authApi.getIdToken(fb.auth.currentUser);
+    const resp = await fetch("/api/delete-account", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idToken }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Delete failed");
+    toast("Account deleted");
+    // onAuthStateChanged will fire with null and handle the signout flow
+  } catch (err) {
+    toast("Could not delete account: " + (err.message || "Unknown error"));
+  }
+}
+
 async function signOut() {
   clearPendingSave();
 
@@ -932,6 +967,10 @@ async function signOut() {
   currentUser = null;
   S = defaultState();
   aiOpen = false;
+  aiPanelChats = {};
+  aiPanelAnimatedPages = {};
+  aiPageChats = [_makeAIChat("chat-default")];
+  activePageChatId = aiPageChats[0].id;
   activeNotebookId = null;
   noteFilter = "notebook";
   notebookSearch = "";
@@ -1136,7 +1175,10 @@ function renderCurrentPage(animated = false) {
   if (curPage === "ai") {
     renderAIPageMsgs();
     syncAIEditUI(); // restore toggle + badge state after page rebuild
+    requestAnimationFrame(() => { lastCreatedChatId = null; });
   }
+  // Re-render the panel intro text so it reflects the new page context
+  if (aiOpen) renderAIPanelMsgs();
 }
 
 function animateDashboardRing() {
@@ -1169,7 +1211,11 @@ function rerenderPage() {
   const nbEl = document.getElementById("notebookBody");
   const savedContent    = nbEl ? nbEl.value : null;
   const savedHeight     = nbEl ? nbEl.style.height : null;
-  const savedNotebookId = activeNotebookId; // capture BEFORE render (switchNotebook updates it first)
+  // Read the notebook ID from the DOM attribute — NOT from activeNotebookId.
+  // switchNotebook() sets activeNotebookId to the NEW id before calling us,
+  // so using the DOM attribute is the only way to know which notebook was
+  // showing before the render and avoid bleeding unsaved content across notebooks.
+  const savedNotebookId = nbEl ? (nbEl.dataset.notebookId || null) : null;
   if (savedHeight) notebookBodyHeight = savedHeight;
 
   renderCurrentPage(false);
@@ -2924,7 +2970,7 @@ const PAGES = {
                 </div>
                 ${activeNb ? `
                   <div class="form-group" style="margin-bottom:0">
-                    <textarea id="notebookBody" class="form-input notebook-body" placeholder="Start writing...">${esc(activeNb.content || "")}</textarea>
+                    <textarea id="notebookBody" class="form-input notebook-body" data-notebook-id="${esc(activeNb.id)}" placeholder="Start writing...">${esc(activeNb.content || "")}</textarea>
                   </div>
                   <div class="composer-actions">
                     <button class="btn btn-primary" onclick="saveNotebook()">Save notebook</button>
@@ -3009,6 +3055,14 @@ const PAGES = {
   },
 
   ai() {
+    const _newId = lastCreatedChatId;
+    const chatTabsHtml = aiPageChats.map(chat => {
+      const classes = ["ai-chat-tab",
+        chat.id === activePageChatId ? "active" : "",
+        chat.id === _newId ? "ai-chat-tab--new" : "",
+      ].filter(Boolean).join(" ");
+      return `<button class="${classes}" onclick="switchAIChat('${chat.id}')" data-chat-id="${chat.id}">${esc(chat.title)}</button>`;
+    }).join("");
     return `
       <div class="ai-page surface-card">
         <div class="ai-page-header">
@@ -3017,17 +3071,22 @@ const PAGES = {
             Pulse AI
             <span class="ai-edit-badge" id="aiEditBadgePage" style="display:none">EDIT</span>
           </div>
-          <div class="ai-mode-row ai-mode-row--page">
-            <div class="ai-mode-label">
-              <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
-              Edit mode
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn btn-ghost btn-sm" onclick="newAIPageChat()">+ New</button>
+            <button class="btn btn-ghost btn-sm btn-icon" onclick="deleteCurrentAIChat()" title="Delete this chat" style="font-size:16px;line-height:1">×</button>
+            <div class="ai-mode-row ai-mode-row--page" style="margin:0">
+              <div class="ai-mode-label">
+                <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+                Edit mode
+              </div>
+              <label class="ai-toggle" title="Enable Pulse AI edit mode">
+                <input type="checkbox" id="aiEditTogglePage" onchange="onAIEditToggle(this)">
+                <span class="ai-toggle-slider"></span>
+              </label>
             </div>
-            <label class="ai-toggle" title="Enable Pulse AI edit mode">
-              <input type="checkbox" id="aiEditTogglePage" onchange="onAIEditToggle(this)">
-              <span class="ai-toggle-slider"></span>
-            </label>
           </div>
         </div>
+        <div class="ai-chat-tabs" id="aiChatTabs">${chatTabsHtml}</div>
         <div id="aiPageMessages" class="ai-page-messages"></div>
         <div class="ai-page-input">
           <input id="aiPageInput" class="ai-input" type="text" placeholder="Ask about your full progress..." onkeydown="if(event.key==='Enter')sendAIPage()">
@@ -3658,6 +3717,10 @@ function openSettings() {
       <button class="btn btn-danger btn-sm" onclick="clearAllData()">Clear all data</button>
       <button class="btn btn-outline btn-sm" onclick="signOut()">Sign out</button>
     </div>
+    <div class="divider" style="margin-top:16px"></div>
+    <div class="form-label" style="margin-bottom:10px;color:var(--text3)">Danger zone</div>
+    <button class="btn btn-danger btn-sm" onclick="closeModal();deleteAccount()">Delete account</button>
+    <p style="font-size:12px;color:var(--text3);margin:6px 0 0">Permanently deletes your account and all data. Cannot be undone.</p>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveSettings()">Save</button>
@@ -3716,6 +3779,102 @@ function openPageAI() {
   if (curPage === "ai") return;
   aiPanelMode = "page";
   toggleAI();
+}
+
+// ── Panel: get (or create) current page's chat array ─────────────────────────
+function getAIPanelMsgs() {
+  const p = curPage;
+  if (!aiPanelChats[p]) {
+    aiPanelChats[p] = [{ role: "assistant", text: "I am Pulse AI. I can help with the page you are looking at right now." }];
+  }
+  return aiPanelChats[p];
+}
+
+// Clear the current page's popup chat
+function clearAIPanelChat() {
+  aiPanelChats[curPage] = [{ role: "assistant", text: "I am Pulse AI. I can help with the page you are looking at right now." }];
+  delete aiPanelAnimatedPages[curPage];
+  renderAIPanelMsgs();
+}
+
+// ── Full-page saved chats ─────────────────────────────────────────────────────
+function getActivePageChat() {
+  return aiPageChats.find(c => c.id === activePageChatId) || aiPageChats[0];
+}
+
+function newAIPageChat() {
+  const chat = _makeAIChat("chat-" + Date.now());
+  aiPageChats.unshift(chat);
+  activePageChatId = chat.id;
+  lastCreatedChatId = chat.id;
+  rerenderPage();
+}
+
+function switchAIChat(id) {
+  activePageChatId = id;
+  renderAIPageMsgs();
+  renderChatList();
+}
+
+function deleteCurrentAIChat() {
+  const chat = getActivePageChat();
+  const label = chat && chat.title !== "New chat" ? `"${chat.title}"` : "this chat";
+  if (!confirm(`Delete ${label}? This conversation will be gone.`)) return;
+
+  if (aiPageChats.length === 1) {
+    // Only one chat — reset it instead of removing
+    chat.messages = [{ role: "assistant", text: "I am Pulse AI. I can help across your full Pulse data, including habits, goals, activity notes, and your notebook." }];
+    chat.title = "New chat";
+    chat.isNew = true;
+    chat._animatedCount = chat.messages.length; // don't animate reset
+    renderAIPageMsgs();
+    renderChatList();
+    return;
+  }
+  aiPageChats = aiPageChats.filter(c => c.id !== activePageChatId);
+  activePageChatId = aiPageChats[0].id;
+  rerenderPage();
+}
+
+function renderChatList() {
+  const tabs = document.getElementById("aiChatTabs");
+  if (!tabs) return;
+  const newId = lastCreatedChatId;
+  tabs.innerHTML = aiPageChats.map(chat => {
+    const classes = ["ai-chat-tab",
+      chat.id === activePageChatId ? "active" : "",
+      chat.id === newId ? "ai-chat-tab--new" : "",
+    ].filter(Boolean).join(" ");
+    return `<button class="${classes}" onclick="switchAIChat('${chat.id}')" data-chat-id="${chat.id}">${esc(chat.title)}</button>`;
+  }).join("");
+  // Clear the flag after the animation has been triggered (one frame is enough)
+  if (newId) requestAnimationFrame(() => { lastCreatedChatId = null; });
+}
+
+async function generateChatTitle(chat) {
+  const firstUserMsg = chat.messages.find(m => m.role === "user");
+  if (!firstUserMsg) return;
+  const config = getAIConfig();
+  if (!config) return;
+  try {
+    const resp = await fetch(config.endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [
+          { role: "system", content: "Generate a short chat title (3-5 words) based on this first message. Reply with ONLY the title, no quotes, no punctuation at the end." },
+          { role: "user", content: firstUserMsg.text },
+        ],
+      }),
+    });
+    const data = await resp.json();
+    if (data.reply) {
+      chat.title = data.reply.trim().replace(/^["']|["']$/g, "").slice(0, 40);
+      chat.isNew = false;
+      renderChatList();
+    }
+  } catch { /* title stays "New chat" */ }
 }
 
 function getAIConfig() {
@@ -3904,9 +4063,13 @@ function buildAIMsgEl(msg) {
 function renderAIPanelMsgs() {
   const wrap = document.getElementById("aiMessages");
   if (!wrap) return;
-  // Track how many messages were already visible so we only animate new ones
-  const prevCount = wrap.querySelectorAll(".ai-msg").length;
   wrap.innerHTML = "";
+
+  const page = curPage;
+  const msgs = getAIPanelMsgs();
+  // Messages below this index have already been seen — suppress their animation
+  const shownCount = aiPanelAnimatedPages[page] ?? 0;
+
   const introTitle = document.querySelector(".ai-intro-title");
   const introText = document.querySelector(".ai-intro-text");
   if (introTitle) introTitle.textContent = aiEditMode ? "Edit mode active" : "Current page help";
@@ -3914,11 +4077,14 @@ function renderAIPanelMsgs() {
     ? `Pulse AI can create and edit your ${PAGE_TITLES[curPage] || "current page"} data. Destructive actions will ask for confirmation.`
     : `Ask about the ${PAGE_TITLES[curPage] || "current"} page and Pulse AI will focus on what is visible here.`;
 
-  aiPanelMsgs.forEach((msg, i) => {
+  msgs.forEach((msg, i) => {
     const el = buildAIMsgEl(msg);
-    if (i < prevCount) el.style.animation = "none"; // already shown — no replay
+    if (i < shownCount) el.style.animation = "none"; // already shown — no replay
     wrap.appendChild(el);
   });
+
+  // Mark all currently rendered messages as "already seen"
+  aiPanelAnimatedPages[page] = msgs.length;
 
   if (aiLoading) {
     const typing = document.createElement("div");
@@ -3942,7 +4108,19 @@ function renderAIPageMsgs() {
   if (!wrap) return;
   wrap.innerHTML = "";
 
-  aiPageMsgs.forEach((msg) => wrap.appendChild(buildAIMsgEl(msg)));
+  const chat = getActivePageChat();
+  const msgs = chat ? chat.messages : [];
+  // Per-chat animation counter — messages below this index are static
+  const shownCount = chat ? (chat._animatedCount || 0) : msgs.length;
+
+  msgs.forEach((msg, i) => {
+    const el = buildAIMsgEl(msg);
+    if (i < shownCount) el.style.animation = "none"; // already shown — no replay
+    wrap.appendChild(el);
+  });
+
+  // Mark all currently rendered messages as "already seen" for this chat
+  if (chat) chat._animatedCount = msgs.length;
 
   if (aiLoading && curPage === "ai") {
     const typing = document.createElement("div");
@@ -4061,19 +4239,23 @@ async function sendAI() {
     inputId: "aiInput",
     scope: "page",
     storeKey: "panel",
-    store: aiPanelMsgs,
+    store: getAIPanelMsgs(),
     render: renderAIPanelMsgs,
   });
 }
 
 async function sendAIPage() {
+  const chat = getActivePageChat();
+  const isFirst = chat.isNew && chat.messages.filter(m => m.role === "user").length === 0;
   await runAIExchange({
     inputId: "aiPageInput",
     scope: "global",
     storeKey: "page",
-    store: aiPageMsgs,
+    store: chat.messages,
     render: renderAIPageMsgs,
   });
+  // After first user message, ask the AI to generate a short chat title
+  if (isFirst) generateChatTitle(chat);
 }
 
 // ─── AI EDIT MODE ─────────────────────────────────────────────────────────────
@@ -4172,7 +4354,7 @@ function executeAIPendingAction(confirmId) {
   if (!aiPendingAction || aiPendingAction.confirmId !== confirmId) return;
 
   const storeKey = aiPendingAction.storeKey;
-  const store = storeKey === "page" ? aiPageMsgs : aiPanelMsgs;
+  const store = storeKey === "page" ? getActivePageChat().messages : getAIPanelMsgs();
   const render = storeKey === "page" ? renderAIPageMsgs : renderAIPanelMsgs;
 
   // Find the action in the store
@@ -4198,7 +4380,7 @@ function cancelAIPendingAction(confirmId) {
   if (!aiPendingAction || aiPendingAction.confirmId !== confirmId) return;
 
   const storeKey = aiPendingAction.storeKey;
-  const store = storeKey === "page" ? aiPageMsgs : aiPanelMsgs;
+  const store = storeKey === "page" ? getActivePageChat().messages : getAIPanelMsgs();
   const render = storeKey === "page" ? renderAIPageMsgs : renderAIPanelMsgs;
 
   for (const msg of store) {
@@ -4676,6 +4858,10 @@ async function initFirebaseAuth() {
         S = defaultState();
         lastRemoteStateJSON = "";
         aiOpen = false;
+        aiPanelChats = {};
+        aiPanelAnimatedPages = {};
+        aiPageChats = [_makeAIChat("chat-default")];
+        activePageChatId = aiPageChats[0].id;
         activeNotebookId = null;
         noteFilter = "notebook";
         notebookSearch = "";
