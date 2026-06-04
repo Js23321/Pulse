@@ -140,6 +140,9 @@ let noteFilter = "notebook";
 let noteSearch = "";
 let notebookSearch = "";
 let activeNotebookId = null; // which notebook is open in the editor
+let historyDate = "";
+let historyYear = null;
+let historyMonth = null;
 let notebookBodyHeight = null; // persists user-resized textarea height across re-renders
 let flashcardDeckId = null;     // deck being studied/managed
 let flashcardCardIndex = 0;
@@ -196,6 +199,7 @@ const PAGE_TITLES = {
   workout: "Workout",
   study: "Study",
   notes: "Notebook",
+  history: "History",
   ai: "Pulse AI",
 };
 
@@ -206,6 +210,7 @@ const PAGE_META = {
   workout: "Training, recovery, and strength goals",
   study: "Learning plans, deep work, and study notes",
   notes: "Notebook and activity notes",
+  history: "See what happened on any day",
   ai: "Whole-account assistant",
 };
 
@@ -260,10 +265,20 @@ function defaultState() {
       },
       studyChecklist: [],
       flashcardDecks: [],
+      focusTimer: { duration: 30, remaining: 30 * 60, running: false },
+      studyGoal: { dailyMinutes: 0 }, // 0 = no goal set
+      studySubject: "",               // currently selected subject label
+      water: { target: 8, log: {} }, // log: { "YYYY-MM-DD": glasses }
+      mood: [],                        // [{ date, rating:1-5, note }]
+      scratchpad: "",                  // quick-capture dashboard note
     },
     settings: {
       name: "",
-      theme: "", // "" = auto-detect from OS; "light" / "dark" = explicit
+      theme: "",
+      darkSchedule: { enabled: false, from: "20:00", to: "07:00" },
+      reminderTime: "",
+      // Draggable dashboard widget layout: [{ id, size, hidden }]
+      dashboardWidgets: null, // null = use default order
     },
   };
 }
@@ -371,27 +386,48 @@ function migrateState(state) {
               : [],
           }))
         : [],
+      focusTimer: {
+        duration: Math.max(1, Number(state.tools?.focusTimer?.duration) || 30),
+        remaining: Math.max(1, Number(state.tools?.focusTimer?.remaining) || 30 * 60),
+        running: false, // never persist running state for focus timer
+      },
+      studyGoal: { dailyMinutes: Math.max(0, Number(state.tools?.studyGoal?.dailyMinutes) || 0) },
+      studySubject: String(state.tools?.studySubject || ""),
+      water: {
+        target: Math.max(1, Number(state.tools?.water?.target) || 8),
+        log: (state.tools?.water?.log && typeof state.tools.water.log === "object") ? state.tools.water.log : {},
+      },
+      mood: Array.isArray(state.tools?.mood) ? state.tools.mood : [],
+      scratchpad: String(state.tools?.scratchpad || ""),
+      workoutLog: Array.isArray(state.tools?.workoutLog) ? state.tools.workoutLog : [],
+      personalRecords: (state.tools?.personalRecords && typeof state.tools.personalRecords === "object") ? state.tools.personalRecords : {},
     },
     settings: {
       name: state.settings?.name || "",
       theme: state.settings?.theme ?? "",
+      darkSchedule: {
+        enabled: Boolean(state.settings?.darkSchedule?.enabled),
+        from: state.settings?.darkSchedule?.from || "20:00",
+        to:   state.settings?.darkSchedule?.to   || "07:00",
+      },
+      reminderTime: String(state.settings?.reminderTime || ""),
+      dashboardWidgets: Array.isArray(state.settings?.dashboardWidgets) ? state.settings.dashboardWidgets : null,
     },
   };
 
-  // When the workout timer isn't actively running, snap remaining to the full
-  // duration of the current exercise/phase so the display is always clean on load.
-  // This prevents stale mid-countdown values from persisting across sessions.
-  if (!migrated.tools.workoutTimer.running) {
-    const wt = migrated.tools.workoutTimer;
-    const ex = wt.exercises[Math.min(wt.currentIndex, wt.exercises.length - 1)];
-    if (ex) wt.remaining = wt.phase === "rest" ? Math.max(1, ex.rest) : ex.work;
-  }
+  // NOTE: Do NOT snap studyTimer.remaining here — that caused pause-resets via
+  // Firestore echo. setStudyDuration() already handles the "wrong remaining on
+  // duration change" case.
+
+  // Same reason as study timer: don't snap workout remaining on load.
+  // resetWorkoutTimer() / the timer tick handles clean state explicitly.
 
   return migrated;
 }
 
 function save() {
   if (!currentUser) return;
+  S._savedAt = Date.now();
   if (isFirebaseConfigured()) {
     queueRemoteSave();
     return;
@@ -851,10 +887,190 @@ function showApp() {
     history.replaceState({}, "", window.location.pathname);
   }
 
-  // Re-attach interval ticks for any timers that were running when state was loaded
+  // Re-attach interval ticks for any timers that were running when state was loaded.
+  // Compensate for time elapsed while the page was closed.
+  const elapsed = S._savedAt ? Math.floor((Date.now() - S._savedAt) / 1000) : 0;
+  if (elapsed > 0) {
+    const pomo = getPomodoroTimer();
+    if (pomo.running) pomo.remaining = Math.max(0, pomo.remaining - elapsed);
+    const work = getWorkoutTimer();
+    if (work.running) work.remaining = Math.max(0, work.remaining - elapsed);
+    const study = getStudyTimer();
+    if (study.running) study.remaining = Math.max(0, study.remaining - elapsed);
+  }
   if (getPomodoroTimer().running) startPomodoroTimerTick();
   if (getWorkoutTimer().running) runWorkoutTimer();
   if (getStudyTimer().running) runStudyTimer();
+
+  startReminderCheck();
+  checkWeeklyDigest();
+
+  // Feature 11: Keyboard shortcuts
+  document.addEventListener("keydown", (e) => {
+    // Ignore when typing in inputs / textareas / contenteditable
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || document.activeElement?.isContentEditable) return;
+    // Ignore modifier combos
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const PAGE_KEYS = { "1": "dashboard", "2": "habits", "3": "goals", "4": "workout", "5": "study", "6": "notes", "7": "ai" };
+    if (PAGE_KEYS[e.key]) { e.preventDefault(); nav(PAGE_KEYS[e.key]); }
+    else if (e.key === "a" || e.key === "A") { e.preventDefault(); toggleAI(); }
+    else if (e.key === "?") { e.preventDefault(); showKeyboardHelp(); }
+    else if (e.key === "Escape") { closeModal(); if (aiOpen) toggleAI(); }
+  });
+
+  // Feature 15: Dark mode schedule — start the schedule check
+  startDarkScheduleCheck();
+}
+
+// Feature 15: Dark mode schedule
+let darkScheduleTimer = null;
+
+// Feature 16: Browser notification reminder
+let reminderTimer = null;
+
+function startReminderCheck() {
+  if (reminderTimer) clearInterval(reminderTimer);
+  reminderTimer = setInterval(checkReminder, 60000);
+}
+
+function checkReminder() {
+  const time = S.settings?.reminderTime;
+  if (!time || Notification?.permission !== "granted") return;
+  const now = getNow();
+  const hhmm = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+  if (hhmm === time) {
+    const doneToday = S.habits.filter(h => h.logs && h.logs[getTodayStr()]).length;
+    const total = S.habits.length;
+    new Notification("Pulse check-in", {
+      body: total > 0
+        ? `${doneToday}/${total} habits done today. Keep the streak going! 🔥`
+        : "Time to check in on your goals and habits.",
+      icon: "/icon.svg",
+    });
+  }
+}
+
+async function requestNotificationAndSaveTime() {
+  const timeInput = document.getElementById("reminderTimeInput");
+  const timeVal = timeInput?.value || "";
+  if (!timeVal) {
+    S.settings.reminderTime = "";
+    save();
+    toast("Reminder removed");
+    return;
+  }
+  if (Notification?.permission === "default") {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") return toast("Notification permission denied");
+  }
+  if (Notification?.permission !== "granted") return toast("Notifications not available");
+  S.settings.reminderTime = timeVal;
+  save();
+  toast(`Daily reminder set for ${timeVal} ✓`);
+}
+
+// Feature 19: Weekly Digest
+function checkWeeklyDigest() {
+  const now = getNow();
+  if (now.getDay() !== 1) return; // Only Monday
+  const weekKey = `digest-${fmtDate(now)}`;
+  const shown = sessionStorage.getItem(weekKey);
+  if (shown) return;
+  sessionStorage.setItem(weekKey, "1");
+  // Show after a small delay so the UI has settled
+  setTimeout(showWeeklyDigest, 1200);
+}
+
+function showWeeklyDigest() {
+  const now = getNow();
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - (7 - i));
+    return fmtDate(d);
+  });
+  const total = S.habits.length;
+  let perfectDays = 0, totalChecks = 0;
+  days.forEach(key => {
+    const done = S.habits.filter(h => h.logs && h.logs[key] && h.logs[key] !== "skip").length;
+    if (total > 0 && done === total) perfectDays++;
+    totalChecks += done;
+  });
+  const completionRate = total > 0 ? Math.round((totalChecks / (total * 7)) * 100) : 0;
+  const pomLog = S.tools?.pomodoroTimer?.sessionLog || [];
+  const weekStudy = days.reduce((sum, key) => {
+    const e = pomLog.find(e => e.date === key);
+    return sum + (e?.focusMinutes || 0);
+  }, 0);
+  const grade = completionRate >= 80 ? "🌟 Outstanding week!" : completionRate >= 60 ? "💪 Strong week!" : completionRate >= 40 ? "📈 Building momentum" : "🌱 Every week is a fresh start";
+  modal(`
+    <div style="text-align:center;padding:8px 0 16px">
+      <div style="font-size:32px;margin-bottom:8px">📊</div>
+      <div class="modal-title">Weekly Review</div>
+      <div style="font-size:13px;color:var(--text2);margin-bottom:20px">${grade}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:20px">
+      <div class="week-stat-chip">
+        <div class="week-stat-val">${completionRate}%</div>
+        <div class="week-stat-label">Habit completion</div>
+      </div>
+      <div class="week-stat-chip">
+        <div class="week-stat-val">${perfectDays}</div>
+        <div class="week-stat-label">Perfect days</div>
+      </div>
+      <div class="week-stat-chip">
+        <div class="week-stat-val">${weekStudy >= 60 ? Math.floor(weekStudy/60) + "h" : weekStudy + "m"}</div>
+        <div class="week-stat-label">Study time</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="closeModal()">Start this week strong →</button>
+    </div>
+  `);
+}
+
+function startDarkScheduleCheck() {
+  if (darkScheduleTimer) clearInterval(darkScheduleTimer);
+  applyDarkSchedule();
+  darkScheduleTimer = setInterval(applyDarkSchedule, 60000); // check every minute
+}
+
+function applyDarkSchedule() {
+  const s = S.settings?.darkSchedule;
+  if (!s?.enabled) return;
+  const now = getNow();
+  const hhmm = `${String(now.getHours()).padStart(2,"0")}:${String(now.getMinutes()).padStart(2,"0")}`;
+  const from = s.from || "20:00";
+  const to   = s.to   || "07:00";
+  let isDark;
+  if (from > to) {
+    // Crosses midnight (e.g., 20:00 → 07:00)
+    isDark = hhmm >= from || hhmm < to;
+  } else {
+    isDark = hhmm >= from && hhmm < to;
+  }
+  const current = document.documentElement.getAttribute("data-theme");
+  const target = isDark ? "dark" : "light";
+  if (current !== target) document.documentElement.setAttribute("data-theme", target);
+}
+
+function showKeyboardHelp() {
+  modal(`
+    <div class="modal-title">Keyboard shortcuts</div>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 20px;align-items:center;font-size:13px;margin-bottom:16px">
+      <kbd class="shortcut-key">1</kbd><span>Dashboard</span>
+      <kbd class="shortcut-key">2</kbd><span>Habits</span>
+      <kbd class="shortcut-key">3</kbd><span>Goals</span>
+      <kbd class="shortcut-key">4</kbd><span>Workout</span>
+      <kbd class="shortcut-key">5</kbd><span>Study</span>
+      <kbd class="shortcut-key">6</kbd><span>Notebook</span>
+      <kbd class="shortcut-key">7</kbd><span>Pulse AI</span>
+      <kbd class="shortcut-key">A</kbd><span>Toggle AI panel</span>
+      <kbd class="shortcut-key">?</kbd><span>This help screen</span>
+      <kbd class="shortcut-key">Esc</kbd><span>Close modal / AI panel</span>
+    </div>
+    <div class="modal-footer"><button class="btn btn-outline" onclick="closeModal()">Close</button></div>
+  `);
 }
 
 function showVerifyScreen(email) {
@@ -954,6 +1170,9 @@ async function signOut() {
   }
 
   stopRemoteStateSync();
+  if (darkScheduleTimer) { clearInterval(darkScheduleTimer); darkScheduleTimer = null; }
+  if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
+  if (stopwatchTick) { clearInterval(stopwatchTick); stopwatchTick = null; }
   if (isFirebaseConfigured()) {
     try {
       const fb = await ensureFirebase();
@@ -974,6 +1193,12 @@ async function signOut() {
   activeNotebookId = null;
   noteFilter = "notebook";
   notebookSearch = "";
+  stopwatchRunning = false;
+  stopwatchSeconds = 0;
+  clearInterval(stopwatchTick);
+  stopwatchTick = null;
+  dashEditMode = false;
+  dashDragSrc = null;
   flashcardDeckId = null;
   flashcardStudyMode = false;
   flashcardFlipped = false;
@@ -1052,6 +1277,26 @@ function updateTopbarMeta() {
   el.textContent = curPage === "dashboard" ? `${base} • ${PAGE_META.dashboard}` : PAGE_META[curPage] || base;
 }
 
+function habitLongestStreak(habit) {
+  if (!habit.logs) return 0;
+  const dates = Object.keys(habit.logs).filter(k => habit.logs[k]).sort();
+  if (!dates.length) return 0;
+  let longest = 1, current = 1;
+  for (let i = 1; i < dates.length; i++) {
+    const prev = new Date(dates[i-1]);
+    const curr = new Date(dates[i]);
+    const diff = Math.round((curr - prev) / 86400000);
+    if (diff === 1) { current++; longest = Math.max(longest, current); }
+    else if (diff > 1) current = 1;
+  }
+  return longest;
+}
+
+function habitTotalDone(habit) {
+  if (!habit.logs) return 0;
+  return Object.values(habit.logs).filter(v => v && v !== "skip").length;
+}
+
 function habitStreak(habit) {
   let streak = 0;
   let d = getNow();
@@ -1085,6 +1330,17 @@ function appStreak() {
     }
   }
   return streak;
+}
+
+function goalDueLabel(due) {
+  if (!due) return "";
+  // Compare by splitting into year/month/day to avoid timezone drift
+  const todayStr = getTodayStr(); // YYYY-MM-DD
+  const diff = Math.round((new Date(due) - new Date(todayStr)) / 86400000);
+  if (diff < 0) return `<span style="color:var(--danger,#e5534b)">⚠ ${Math.abs(diff)}d overdue</span>`;
+  if (diff === 0) return `<span style="color:var(--warning)">Due today</span>`;
+  if (diff <= 3) return `<span style="color:var(--warning)">${diff}d left</span>`;
+  return `${diff}d left`;
 }
 
 function goalCur(goal) {
@@ -1205,6 +1461,33 @@ function nav(page) {
   renderCurrentPage(true);
 }
 
+function navDay(dir) {
+  const base = historyDate || getTodayStr();
+  const d = new Date(base + "T00:00:00");
+  d.setDate(d.getDate() + dir);
+  historyDate = fmtDate(d);
+  rerenderPage();
+}
+
+function jumpToToday() {
+  historyDate = "";
+  historyYear = null;
+  historyMonth = null;
+  rerenderPage();
+}
+
+function navMonth(dir) {
+  const now = new Date();
+  let y = historyYear !== null ? historyYear : now.getFullYear();
+  let m = historyMonth !== null ? historyMonth : now.getMonth();
+  m += dir;
+  if (m < 0) { m = 11; y--; }
+  if (m > 11) { m = 0; y++; }
+  historyYear = y;
+  historyMonth = m;
+  rerenderPage();
+}
+
 function rerenderPage() {
   // Preserve the notebook textarea's unsaved content and user-resized height
   // across re-renders triggered by onSnapshot (Firebase sync echo) or saves.
@@ -1218,18 +1501,23 @@ function rerenderPage() {
   const savedNotebookId = nbEl ? (nbEl.dataset.notebookId || null) : null;
   if (savedHeight) notebookBodyHeight = savedHeight;
 
+  // Preserve scratchpad textarea mid-typing
+  const spEl = document.querySelector(".scratch-pad");
+  const savedScratch = spEl ? spEl.value : null;
+
   renderCurrentPage(false);
 
   const nbElAfter = document.getElementById("notebookBody");
   if (nbElAfter) {
-    // Restore unsaved typed content only when the same notebook is still active.
-    // If the user switched notebooks, activeNotebookId has already changed, so
-    // savedNotebookId !== activeNotebookId and we leave the new notebook's content alone.
     if (savedContent !== null && savedNotebookId === activeNotebookId) {
       nbElAfter.value = savedContent;
     }
     if (notebookBodyHeight) nbElAfter.style.height = notebookBodyHeight;
   }
+
+  // Restore scratchpad content (debounce save means it may not yet be in S)
+  const spAfter = document.querySelector(".scratch-pad");
+  if (spAfter && savedScratch !== null) spAfter.value = savedScratch;
 }
 
 function fmtTimer(totalSeconds) {
@@ -1409,6 +1697,34 @@ function toggleWorkoutTimer() {
   syncWorkoutTimerUI();
 }
 
+// Feature 14: Log completed workout session + personal records
+function logCompletedWorkout() {
+  const timer = getWorkoutTimer();
+  const totalSecs = getWorkoutTotalDuration(timer);
+  const today = getTodayStr();
+  if (!S.tools.workoutLog) S.tools.workoutLog = [];
+  S.tools.workoutLog.push({
+    date: today,
+    exercises: timer.exercises.map(e => ({ name: e.name, work: e.work })),
+    totalSeconds: totalSecs,
+  });
+  // Check for personal record (fastest total time for this exercise set)
+  const prKey = timer.exercises.map(e => e.name).join("|");
+  if (!S.tools.personalRecords) S.tools.personalRecords = {};
+  const prevPR = S.tools.personalRecords[prKey];
+  if (!prevPR || totalSecs <= prevPR.totalSeconds) {
+    S.tools.personalRecords[prKey] = { totalSeconds: totalSecs, date: today };
+    if (!prevPR) {
+      toast("Workout logged! First time tracking this routine 🏋️");
+    } else {
+      celebrateToast("🏆 Personal record! Fastest time for this routine!");
+    }
+  } else {
+    toast(`Workout logged! PR is ${fmtTimer(prevPR.totalSeconds)} (${prevPR.date})`);
+  }
+  save();
+}
+
 function resetWorkoutTimer() {
   const timer = getWorkoutTimer();
   timer.running = false;
@@ -1514,6 +1830,114 @@ function renderStudyTimerCard() {
   `;
 }
 
+
+// ── Feature 2: Stopwatch (Focus Timer) ──────────────────────────────────────
+let stopwatchRunning = false;
+let stopwatchSeconds = 0;
+let stopwatchTick = null;
+
+function startStopwatch() {
+  stopwatchRunning = true;
+  stopwatchTick = setInterval(() => {
+    stopwatchSeconds++;
+    const el = document.getElementById("stopwatchDisplay");
+    if (el) el.textContent = fmtTimer(stopwatchSeconds);
+  }, 1000);
+  rerenderPage();
+}
+
+function pauseStopwatch() {
+  stopwatchRunning = false;
+  clearInterval(stopwatchTick);
+  stopwatchTick = null;
+  rerenderPage();
+}
+
+function resetStopwatch() {
+  stopwatchRunning = false;
+  stopwatchSeconds = 0;
+  clearInterval(stopwatchTick);
+  stopwatchTick = null;
+  rerenderPage();
+}
+
+function renderStopwatchCard() {
+  const fmtSec = (s) => {
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return h > 0 ? `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`
+                 : `${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+  };
+
+  // Feature 3: Daily study goal progress
+  const goalMins = S.tools?.studyGoal?.dailyMinutes || 0;
+  const todayEntry = (S.tools.pomodoroTimer?.sessionLog || []).find(e => e.date === getTodayStr());
+  const studiedMins = (todayEntry?.focusMinutes || 0) + Math.floor(stopwatchSeconds / 60);
+  const goalPct = goalMins > 0 ? Math.min(100, Math.round((studiedMins / goalMins) * 100)) : 0;
+
+  return `
+    <div class="workspace-tool surface-card">
+      <div class="workspace-tool-head">
+        <div>
+          <div class="workspace-tool-title">Stopwatch</div>
+          <div class="workspace-tool-sub">Track open-ended sessions. No pressure, just time.</div>
+        </div>
+        <div class="workspace-timer-display" id="stopwatchDisplay">${fmtSec(stopwatchSeconds)}</div>
+      </div>
+      <div class="workspace-tool-row">
+        <div class="workspace-tool-status">${stopwatchRunning ? "Counting…" : stopwatchSeconds > 0 ? `Paused at ${fmtSec(stopwatchSeconds)}` : "Ready"}</div>
+        <div class="workspace-tool-actions">
+          ${stopwatchRunning
+            ? `<button class="btn btn-outline btn-sm" onclick="pauseStopwatch()">Pause</button>`
+            : `<button class="btn btn-outline btn-sm" onclick="startStopwatch()">Start</button>`}
+          <button class="btn btn-ghost btn-sm" onclick="resetStopwatch()">Reset</button>
+        </div>
+      </div>
+      ${goalMins > 0 ? `
+        <div style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:12px;font-weight:700;color:var(--text2)">Daily goal: ${goalMins} min</span>
+            <span style="font-size:12px;font-weight:700;color:${goalPct>=100?"var(--success)":"var(--accent)"}">${studiedMins}/${goalMins} min · ${goalPct}%</span>
+          </div>
+          <div class="prog-track"><div class="prog-fill" style="width:${goalPct}%;background:${goalPct>=100?"var(--success)":"var(--accent)"}"></div></div>
+        </div>
+      ` : `
+        <div style="margin-top:10px;font-size:12px;color:var(--text3)">
+          Set a daily study goal in
+          <button class="btn btn-ghost btn-sm" style="font-size:12px;padding:0 4px;height:auto" onclick="openStudyGoalModal()">settings</button>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function openStudyGoalModal() {
+  const current = S.tools?.studyGoal?.dailyMinutes || 0;
+  modal(`
+    <div class="modal-title">Daily study goal</div>
+    <div class="form-group">
+      <label class="form-label">Target minutes per day</label>
+      <input id="studyGoalInput" class="form-input" type="number" min="0" max="600" value="${current}" placeholder="e.g. 60">
+      <div class="form-hint">Set to 0 to remove the goal. Tracks combined Pomodoro + Stopwatch time.</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveStudyGoal()">Save</button>
+    </div>
+  `);
+}
+
+function saveStudyGoal() {
+  const val = Math.max(0, parseInt(document.getElementById("studyGoalInput").value) || 0);
+  if (!S.tools.studyGoal) S.tools.studyGoal = { dailyMinutes: 0 };
+  S.tools.studyGoal.dailyMinutes = val;
+  save();
+  closeModal();
+  rerenderPage();
+  toast(val > 0 ? `Daily goal set: ${val} min` : "Study goal removed");
+}
+
 function renderWorkoutTimerCard() {
   const timer = getWorkoutTimer();
   const current = timer.exercises[timer.currentIndex] || timer.exercises[0];
@@ -1540,6 +1964,7 @@ function renderWorkoutTimerCard() {
             <button class="btn btn-outline btn-sm" id="workoutTimerToggle" onclick="toggleWorkoutTimer()">${timer.running ? "Pause" : "Start"}</button>
             <button class="btn btn-ghost btn-sm" onclick="nextWorkoutTimerStep()">Next</button>
             <button class="btn btn-ghost btn-sm" onclick="resetWorkoutTimer()">Reset</button>
+            <button class="btn btn-outline btn-sm" onclick="logCompletedWorkout()" title="Log this session as complete">Log</button>
           </div>
         </div>
       </div>
@@ -1614,12 +2039,23 @@ function startPomodoroTimerTick() {
       // Phase transition — advance to the next phase
       if (t.phase === "work") {
         t.completed += 1;
-        // Record completed focus session
+        // Record completed focus session (include current subject if set)
         const today = getTodayStr();
         if (!Array.isArray(t.sessionLog)) t.sessionLog = [];
         const entry = t.sessionLog.find((e) => e.date === today);
-        if (entry) { entry.sessions += 1; entry.focusMinutes += t.duration; }
-        else t.sessionLog.push({ date: today, sessions: 1, focusMinutes: t.duration });
+        const subject = S.tools.studySubject || "";
+        if (entry) {
+          entry.sessions += 1;
+          entry.focusMinutes += t.duration;
+          if (subject) {
+            if (!entry.subjects) entry.subjects = {};
+            entry.subjects[subject] = (entry.subjects[subject] || 0) + t.duration;
+          }
+        } else {
+          const newEntry = { date: today, sessions: 1, focusMinutes: t.duration };
+          if (subject) newEntry.subjects = { [subject]: t.duration };
+          t.sessionLog.push(newEntry);
+        }
         if (t.completed >= t.sessionsBeforeLong) {
           t.phase = "longBreak";
           t.remaining = t.longBreak * 60;
@@ -1811,8 +2247,8 @@ function renderFlashcardStudy(deck) {
   const isFirst = flashcardCardIndex === 0;
   const isLast  = flashcardCardIndex === cards.length - 1;
   const answered = flashcardAnswers[flashcardCardIndex] !== undefined;
-  const correctSoFar = Object.values(flashcardAnswers).filter(Boolean).length;
-  const wrongSoFar   = Object.values(flashcardAnswers).filter((v) => v === false).length;
+  const correctSoFar = Object.values(flashcardAnswers).filter(v => v === 2).length;
+  const wrongSoFar   = Object.values(flashcardAnswers).filter(v => v === 0).length;
   const progressPct  = Math.round((flashcardCardIndex / cards.length) * 100);
 
   return `
@@ -1850,8 +2286,9 @@ function renderFlashcardStudy(deck) {
                ${isLast ? "See results →" : "Next →"}
              </button>`
           : `<div class="fc-answer-btns">
-               <button class="btn fc-wrong-btn" onclick="answerFlashcard('${deck.id}', false)">✗ Wrong</button>
-               <button class="btn fc-correct-btn" onclick="answerFlashcard('${deck.id}', true)">✓ Got it</button>
+               <button class="btn fc-missed-btn" onclick="answerFlashcard('${deck.id}',0)" title="Didn't know it">✗ Missed</button>
+               <button class="btn fc-almost-btn" onclick="answerFlashcard('${deck.id}',1)" title="Almost had it">~ Almost</button>
+               <button class="btn fc-correct-btn" onclick="answerFlashcard('${deck.id}',2)" title="Knew it confidently">✓ Know it</button>
              </div>`
         }
       </div>
@@ -1864,19 +2301,20 @@ function renderFlashcardSummary(deck) {
     ? flashcardSubset.map((i) => deck.cards[i]).filter(Boolean)
     : deck.cards;
   const total   = cards.length;
-  const correct = Object.values(flashcardAnswers).filter(Boolean).length;
-  const wrong   = total - correct;
-  const pct     = total ? Math.round((correct / total) * 100) : 0;
+  const correct = Object.values(flashcardAnswers).filter(v => v === 2).length;
+  const almost  = Object.values(flashcardAnswers).filter(v => v === 1).length;
+  const pct   = total ? Math.round((correct / total) * 100) : 0;
+  const grade = pct === 100 ? "Perfect! 🎉" : pct >= 80 ? "Great work! 🙌" : pct >= 60 ? "Good effort 💪" : pct >= 40 ? "Keep at it 📖" : "Needs practice 🔁";
 
   const elapsed = flashcardStartTime ? Math.round((Date.now() - flashcardStartTime) / 1000) : 0;
   const timeStr = elapsed >= 60
     ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
     : `${elapsed}s`;
 
-  const grade = pct === 100 ? "Perfect! 🎉" : pct >= 80 ? "Great work! 🙌" : pct >= 60 ? "Good effort 💪" : pct >= 40 ? "Keep at it 📖" : "Needs practice 🔁";
-
-  const correctCards = cards.filter((_, i) => flashcardAnswers[i] === true);
-  const wrongCards   = cards.filter((_, i) => flashcardAnswers[i] === false);
+  const correctCards = cards.filter((_, i) => flashcardAnswers[i] === 2);
+  const almostCards  = cards.filter((_, i) => flashcardAnswers[i] === 1);
+  const wrongCards   = cards.filter((_, i) => flashcardAnswers[i] === 0);
+  const wrong        = wrongCards.length; // referenced in fc-stat template below
 
   return `
     <div class="workspace-tool surface-card">
@@ -1907,15 +2345,23 @@ function renderFlashcardSummary(deck) {
         </div>
         ${wrongCards.length > 0 ? `
           <div class="fc-summary-section">
-            <div class="fc-summary-section-hd fc-section-wrong">✗ Needs review (${wrongCards.length})</div>
+            <div class="fc-summary-section-hd fc-section-wrong">✗ Missed (${wrongCards.length})</div>
             <div class="fc-summary-items">
               ${wrongCards.map((c) => `<div class="fc-summary-item fc-item-wrong">${esc(c.front)}</div>`).join("")}
             </div>
           </div>
         ` : ""}
+        ${almostCards.length > 0 ? `
+          <div class="fc-summary-section">
+            <div class="fc-summary-section-hd" style="color:var(--warning)">~ Almost (${almostCards.length})</div>
+            <div class="fc-summary-items">
+              ${almostCards.map((c) => `<div class="fc-summary-item" style="background:rgba(194,122,24,0.08);color:var(--warning)">${esc(c.front)}</div>`).join("")}
+            </div>
+          </div>
+        ` : ""}
         ${correctCards.length > 0 ? `
           <div class="fc-summary-section">
-            <div class="fc-summary-section-hd fc-section-correct">✓ Got it (${correctCards.length})</div>
+            <div class="fc-summary-section-hd fc-section-correct">✓ Know it (${correctCards.length})</div>
             <div class="fc-summary-items">
               ${correctCards.map((c) => `<div class="fc-summary-item fc-item-correct">${esc(c.front)}</div>`).join("")}
             </div>
@@ -2039,8 +2485,10 @@ function flashcardShowSummary() {
   rerenderPage();
 }
 
-function answerFlashcard(deckId, correct) {
-  flashcardAnswers[flashcardCardIndex] = correct;
+// confidence: 0=missed, 1=almost, 2=know it  (old boolean also accepted for back-compat)
+function answerFlashcard(deckId, confidence) {
+  const conf = confidence === true ? 2 : confidence === false ? 0 : Number(confidence);
+  flashcardAnswers[flashcardCardIndex] = conf; // 0/1/2
   const deck = getFlashcardDecks().find((d) => d.id === deckId);
   if (!deck) return;
   const cards = flashcardSubset
@@ -2058,8 +2506,9 @@ function answerFlashcard(deckId, correct) {
 function retryWrongCards(deckId) {
   const deck = getFlashcardDecks().find((d) => d.id === deckId);
   if (!deck) return;
+  // Retry missed (0) and almost (1) cards
   const wrongIdxs = Object.keys(flashcardAnswers)
-    .filter((i) => flashcardAnswers[Number(i)] === false)
+    .filter((i) => flashcardAnswers[Number(i)] < 2)
     .map(Number);
   // Map back through any existing subset so we keep original deck indices
   flashcardSubset      = flashcardSubset ? wrongIdxs.map((i) => flashcardSubset[i]).filter((v) => v !== undefined) : wrongIdxs;
@@ -2186,9 +2635,82 @@ function renderPomodoroTimerCard() {
         </div>
       </div>
       <div class="pomo-dots" id="pomodoroDots">${dots}</div>
+
+      <!-- Subject tag selector -->
+      <div class="pomo-subject-row">
+        <span class="pomo-subject-label">Studying:</span>
+        ${["General","Maths","Science","Coding","History","Languages","Other"].map(s =>
+          `<button class="pomo-subject-chip${(S.tools.studySubject||"General")===s?" active":""}" onclick="setStudySubject('${s}')">${s}</button>`
+        ).join("")}
+      </div>
+
       ${weekSessions > 0 || todaySessions > 0 ? historyHtml : ""}
+
+      ${(()=>{
+        // Subject breakdown for today
+        const subjects = todayEntry?.subjects || {};
+        const keys = Object.keys(subjects);
+        if (!keys.length) return "";
+        return `<div class="pomo-subject-breakdown">
+          <div class="pomo-subject-breakdown-title">Today's focus breakdown</div>
+          ${keys.sort((a,b)=>subjects[b]-subjects[a]).map(k=>
+            `<div class="pomo-subject-row-item">
+              <span class="pomo-subject-name">${esc(k)}</span>
+              <div class="pomo-subject-bar-wrap">
+                <div class="pomo-subject-bar" style="width:${Math.round((subjects[k]/Math.max(...Object.values(subjects)))*100)}%"></div>
+              </div>
+              <span class="pomo-subject-mins">${fmtMins(subjects[k])}</span>
+            </div>`
+          ).join("")}
+        </div>`;
+      })()}
     </div>
   `;
+}
+
+// Feature 6: Water tracker
+function logWater(glasses) {
+  if (!S.tools.water) S.tools.water = { target: 8, log: {} };
+  if (!S.tools.water.log) S.tools.water.log = {};
+  const today = getTodayStr();
+  S.tools.water.log[today] = glasses;
+  save();
+  rerenderPage();
+  if (glasses >= S.tools.water.target) celebrateToast("💧 Hydration goal reached!");
+}
+
+// Feature 7: Mood journal
+// Feature 18: Scratchpad
+let scratchpadTimer = null;
+function saveScratchpad(value) {
+  clearTimeout(scratchpadTimer);
+  scratchpadTimer = setTimeout(() => {
+    if (!S.tools) S.tools = defaultState().tools;
+    S.tools.scratchpad = value;
+    save();
+  }, 800); // debounce 800ms so we don't hammer Firestore while typing
+}
+
+function logMood(rating) {
+  if (!S.tools.mood) S.tools.mood = [];
+  const today = getTodayStr();
+  const existing = S.tools.mood.find(m => m.date === today);
+  if (existing) {
+    existing.rating = rating;
+  } else {
+    S.tools.mood.push({ date: today, rating, note: "" });
+  }
+  save();
+  rerenderPage();
+  const labels = ["Rough","Low","Okay","Good","Great"];
+  toast(`Mood logged: ${labels[rating-1]}`);
+}
+
+function setStudySubject(subject) {
+  if (!S.tools) S.tools = {};
+  S.tools.studySubject = subject;
+  save();
+  rerenderPage();
 }
 
 function categoryWorkspacePage(categoryId) {
@@ -2229,6 +2751,7 @@ function categoryWorkspacePage(categoryId) {
           ${renderFlashcardWidget()}
         </div>
         <aside class="page-side">
+          ${renderStopwatchCard()}
           ${renderStudyTimerCard()}
           ${renderChecklistCard()}
           ${habits.length ? `
@@ -2422,6 +2945,616 @@ function categoryWorkspacePage(categoryId) {
   `;
 }
 
+// ─── MINI RING SVG UTILITY ────────────────────────────────────────────────────
+// Returns an inline SVG progress ring. size = diameter in px.
+function miniRing(pct, color, size = 36, strokeWidth = 3.5) {
+  const r = (size - strokeWidth * 2) / 2;
+  const circ = 2 * Math.PI * r;
+  const safeP = Math.min(100, Math.max(0, pct));
+  const offset = circ - (circ * safeP / 100);
+  const c = size / 2;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="flex-shrink:0" aria-hidden="true">
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${strokeWidth}"/>
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${color}" stroke-width="${strokeWidth}"
+      stroke-linecap="round"
+      stroke-dasharray="${circ.toFixed(2)}"
+      stroke-dashoffset="${offset.toFixed(2)}"
+      transform="rotate(-90 ${c} ${c})"
+      style="transition:stroke-dashoffset .6s ease"/>
+  </svg>`;
+}
+
+// ─── DASHBOARD WIDGET SYSTEM — 2-column Apple-style grid ─────────────────────
+//
+// Each widget: { id, col, row, w, h, hidden }
+//   col  : 1 or 2 (grid column start)
+//   row  : 1‥N    (grid row start — explicit so any widget can sit anywhere)
+//   w    : 1=half-width  2=full-width
+//   h    : always 1 (height is content-driven)
+//   hidden: bool
+//
+// COLS = 2 — matches CSS grid-template-columns: 1fr 1fr
+
+const WIDGET_DEFS = [
+  { id: "ring",      label: "Progress"          },
+  { id: "habits",    label: "Today's habits"    },
+  { id: "score",     label: "Today's score"     },
+  { id: "goals",     label: "Goals in progress" },
+  { id: "quote",     label: "Quote of the day"  },
+  { id: "water",     label: "Hydration"         },
+  { id: "mood",      label: "Mood check-in"     },
+  { id: "notebook",  label: "Notebook preview"  },
+  { id: "scratchpad",label: "Quick notes"       },
+  { id: "ai",        label: "Pulse AI"          },
+  { id: "glance",    label: "Today at a glance" },
+];
+
+// Default grid layout — tweak rows to taste
+const DEFAULT_WIDGET_LAYOUT = [
+  { id: "ring",       col: 1, row: 1, w: 2, h: 1, hidden: false },
+  { id: "habits",     col: 1, row: 2, w: 1, h: 1, hidden: false },
+  { id: "score",      col: 2, row: 2, w: 1, h: 1, hidden: false },
+  { id: "goals",      col: 1, row: 3, w: 1, h: 1, hidden: false },
+  { id: "quote",      col: 2, row: 3, w: 1, h: 1, hidden: false },
+  { id: "water",      col: 1, row: 4, w: 1, h: 1, hidden: false },
+  { id: "mood",       col: 2, row: 4, w: 1, h: 1, hidden: false },
+  { id: "notebook",   col: 1, row: 5, w: 2, h: 1, hidden: false },
+  { id: "scratchpad", col: 1, row: 6, w: 1, h: 1, hidden: false },
+  { id: "ai",         col: 2, row: 6, w: 1, h: 1, hidden: false },
+  { id: "glance",     col: 1, row: 7, w: 2, h: 1, hidden: false },
+];
+
+function getDashWidgets() {
+  const saved = S.settings?.dashboardWidgets;
+  if (!Array.isArray(saved) || !saved.length) return DEFAULT_WIDGET_LAYOUT.map(w => ({ ...w }));
+  const known = new Set(saved.map(w => w.id));
+  // Add any newly-defined widgets below saved ones
+  const extras = DEFAULT_WIDGET_LAYOUT
+    .filter(w => !known.has(w.id))
+    .map((w, i) => {
+      // Place new widgets at the bottom of the grid
+      const maxRow = saved.reduce((m, sw) => Math.max(m, (sw.row || 1) + (sw.h || 1) - 1), 1);
+      return { ...w, row: maxRow + 1 + i };
+    });
+  // Normalise old entries (migrate from span/size format)
+  const normalised = saved.map(w => ({
+    id: w.id,
+    col: w.col ?? 1,
+    row: w.row ?? 1,
+    w:   w.w ?? w.span ?? w.size ?? 1,
+    h:   w.h ?? 1,
+    hidden: !!w.hidden,
+  }));
+  return [...normalised, ...extras];
+}
+
+// ─── DAILY QUOTE (Feature 5) ─────────────────────────────────────────────────
+const DAILY_QUOTES = [
+  ["The secret of getting ahead is getting started.", "Mark Twain"],
+  ["Small daily improvements over time lead to stunning results.", "Robin Sharma"],
+  ["Don't watch the clock; do what it does. Keep going.", "Sam Levenson"],
+  ["The only way to do great work is to love what you do.", "Steve Jobs"],
+  ["Discipline is choosing between what you want now and what you want most.", "Abraham Lincoln"],
+  ["Success is the sum of small efforts, repeated day in and day out.", "Robert Collier"],
+  ["You don't have to be great to start, but you have to start to be great.", "Zig Ziglar"],
+  ["Motivation is what gets you started. Habit is what keeps you going.", "Jim Ryun"],
+  ["We are what we repeatedly do. Excellence is not an act, but a habit.", "Aristotle"],
+  ["It does not matter how slowly you go as long as you do not stop.", "Confucius"],
+  ["The future depends on what you do today.", "Mahatma Gandhi"],
+  ["Consistency is the key to achieving and maintaining momentum.", "Darren Hardy"],
+  ["Progress, not perfection.", "Unknown"],
+  ["One day or day one. You decide.", "Unknown"],
+  ["Show up. Even when you don't feel like it.", "Unknown"],
+  ["A little progress each day adds up to big results.", "Satya Nani"],
+  ["Your habits will determine your future.", "Jack Canfield"],
+  ["The difference between ordinary and extraordinary is that little extra.", "Jimmy Johnson"],
+  ["Hard work beats talent when talent doesn't work hard.", "Tim Notke"],
+  ["Fall seven times, stand up eight.", "Japanese Proverb"],
+  ["You are one decision away from a completely different life.", "Unknown"],
+  ["The pain of discipline is far less than the pain of regret.", "Unknown"],
+  ["Success is not final; failure is not fatal. It is the courage to continue.", "Winston Churchill"],
+  ["Do something today that your future self will thank you for.", "Unknown"],
+  ["Every master was once a disaster.", "T. Harv Eker"],
+  ["The best time to plant a tree was 20 years ago. The second best time is now.", "Chinese Proverb"],
+  ["Believe you can and you're halfway there.", "Theodore Roosevelt"],
+  ["Your only limit is your mind.", "Unknown"],
+  ["Dream big. Start small. Act now.", "Unknown"],
+  ["The journey of a thousand miles begins with a single step.", "Lao Tzu"],
+];
+
+function getDailyQuote() {
+  // Pick a quote based on the day of year so it stays consistent all day
+  const d = getNow();
+  const dayOfYear = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+  return DAILY_QUOTES[dayOfYear % DAILY_QUOTES.length];
+}
+
+// ─── WEEK STRIP ───────────────────────────────────────────────────────────────
+// Returns a 7-day Mon→today completion strip for the dashboard panel.
+function weekStrip() {
+  if (!S.habits.length) return "";
+  const total = S.habits.length;
+  const now = getNow();
+  const todayKey = getTodayStr(); // uses fmtDate (UTC ISO) — same as habit log keys
+  const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    const key = fmtDate(d); // UTC — consistent with how habit logs are stored
+    const done = S.habits.filter(h => h.logs && h.logs[key] === true).length;
+    const pct = Math.round((done / total) * 100);
+    // Level 0 = nothing, 1 = some (<40%), 2 = half (40-74%), 3 = most (75-99%), 4 = full (100%)
+    const level = done === 0 ? 0 : pct >= 100 ? 4 : pct >= 75 ? 3 : pct >= 40 ? 2 : 1;
+    days.push({ label: DAY_LABELS[d.getDay()], key, pct, done, total, isToday: key === todayKey, level });
+  }
+  return `
+    <div class="week-strip">
+      <div class="week-strip-label">This week</div>
+      <div class="week-strip-days">
+        ${days.map(d => `
+          <div class="week-day${d.isToday ? " week-day--today" : ""}">
+            <div class="week-dot week-dot--${d.level}" title="${d.done}/${d.total} habits · ${d.key}"></div>
+            <div class="week-day-label">${d.label}</div>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+// ─── DASHBOARD WIDGET SYSTEM ──────────────────────────────────────────────────
+let dashEditMode = false;
+let dashDragSrc = null;
+
+function toggleWidgetEditMode() {
+  dashEditMode = !dashEditMode;
+  const btn = document.getElementById("dashCustomizeBtn");
+  if (btn) btn.title = dashEditMode ? "Done customizing" : "Customize home layout";
+  rerenderPage();
+}
+
+function toggleWidgetSize(id) {
+  const widgets = getDashWidgets();
+  const wid = widgets.find(w => w.id === id);
+  if (!wid) return;
+  if (wid.w === 1) {
+    // Expand to full-width: move to col 1
+    wid.w = 2; wid.col = 1;
+  } else {
+    // Shrink to half: keep col 1
+    wid.w = 1;
+  }
+  S.settings.dashboardWidgets = widgets;
+  save();
+  rerenderPage();
+}
+
+function hideWidget(id) {
+  const widgets = getDashWidgets();
+  const wid = widgets.find(w => w.id === id);
+  if (wid) wid.hidden = true;
+  S.settings.dashboardWidgets = widgets;
+  save();
+  rerenderPage();
+}
+
+function showWidgetById(id) {
+  const widgets = getDashWidgets();
+  const wid = widgets.find(w => w.id === id);
+  if (wid) wid.hidden = false;
+  S.settings.dashboardWidgets = widgets;
+  save();
+  rerenderPage();
+}
+
+// ── 2-D pointer drag ─────────────────────────────────────────────────────────
+let gridDrag = null;
+// { id, el, clone, offsetX, offsetY, targetId }
+
+function startWidgetDrag(e, id) {
+  if (!dashEditMode) return;
+  e.preventDefault();
+  const el = document.querySelector(`.dash-widget[data-widget-id="${id}"]`);
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+
+  // Floating clone that follows the cursor
+  const clone = el.cloneNode(true);
+  clone.removeAttribute("data-widget-id");
+  Object.assign(clone.style, {
+    position: "fixed",
+    left: rect.left + "px", top: rect.top + "px",
+    width: rect.width + "px",
+    pointerEvents: "none",
+    opacity: "0.88",
+    zIndex: "9999",
+    boxShadow: "0 28px 72px rgba(0,0,0,0.32)",
+    transform: "scale(1.03) rotate(1deg)",
+    transition: "transform 0.12s",
+    borderRadius: "24px",
+    willChange: "left,top",
+  });
+  document.body.appendChild(clone);
+
+  // Dim the original in place
+  el.classList.add("widget-dragging");
+
+  gridDrag = {
+    id, el, clone,
+    offsetX: e.clientX - rect.left,
+    offsetY: e.clientY - rect.top,
+    targetId: null,
+  };
+
+  document.addEventListener("pointermove", onWidgetPointerMove, { passive: false });
+  document.addEventListener("pointerup",   onWidgetPointerUp);
+}
+
+function onWidgetPointerMove(e) {
+  if (!gridDrag) return;
+  e.preventDefault();
+  const { clone, offsetX, offsetY, id } = gridDrag;
+
+  // Move clone
+  clone.style.left = (e.clientX - offsetX) + "px";
+  clone.style.top  = (e.clientY - offsetY) + "px";
+
+  // Find what's under the cursor — clone is pointer-events:none so we see through
+  const under = document.elementsFromPoint(e.clientX, e.clientY);
+  const targetEl = under.find(
+    el => el.classList.contains("dash-widget") && el.dataset.widgetId && el.dataset.widgetId !== id
+  );
+
+  // Highlight target
+  document.querySelectorAll(".dash-widget--drop-target").forEach(el =>
+    el.classList.remove("dash-widget--drop-target"));
+
+  if (targetEl) {
+    targetEl.classList.add("dash-widget--drop-target");
+    gridDrag.targetId = targetEl.dataset.widgetId;
+  } else {
+    gridDrag.targetId = null;
+    // Also detect which grid CELL the cursor is in for empty-cell drops
+    const grid = document.querySelector(".dash-widget-grid");
+    if (grid) {
+      const gr = grid.getBoundingClientRect();
+      const relX = e.clientX - gr.left;
+      const relY = e.clientY - gr.top;
+      gridDrag.dropCol = relX < gr.width / 2 ? 1 : 2;
+      // Determine row by scanning widget positions
+      gridDrag.dropRow = estimateDropRow(e.clientY);
+    }
+  }
+}
+
+function estimateDropRow(clientY) {
+  // Find the nearest widget row by scanning existing widget els
+  let bestRow = 1, bestDist = Infinity;
+  document.querySelectorAll(".dash-widget[data-widget-id]").forEach(el => {
+    const r = el.getBoundingClientRect();
+    const mid = r.top + r.height / 2;
+    const dist = Math.abs(clientY - mid);
+    if (dist < bestDist) {
+      bestDist = dist;
+      const id = el.dataset.widgetId;
+      const widgets = getDashWidgets();
+      const wid = widgets.find(w => w.id === id);
+      if (wid) bestRow = wid.row;
+    }
+  });
+  return bestRow;
+}
+
+function onWidgetPointerUp(e) {
+  if (!gridDrag) return;
+  const { id, el, clone, targetId, dropCol, dropRow } = gridDrag;
+
+  clone.remove();
+  el.classList.remove("widget-dragging");
+  document.querySelectorAll(".dash-widget--drop-target").forEach(el =>
+    el.classList.remove("dash-widget--drop-target"));
+  document.removeEventListener("pointermove", onWidgetPointerMove);
+  document.removeEventListener("pointerup",   onWidgetPointerUp);
+  gridDrag = null;
+
+  const widgets = getDashWidgets();
+  const src = widgets.find(w => w.id === id);
+  if (!src) return;
+
+  if (targetId) {
+    // Swap grid positions with target widget
+    const tgt = widgets.find(w => w.id === targetId);
+    if (tgt) {
+      const tmp = { col: src.col, row: src.row, w: src.w };
+      src.col = tgt.col; src.row = tgt.row;
+      // When sizes differ, each widget takes the other's spot but keeps its own width
+      // Clamp col so a w=2 widget always starts at col 1
+      if (src.w === 2) src.col = 1;
+      tgt.col = tmp.col; tgt.row = tmp.row;
+      if (tgt.w === 2) tgt.col = 1;
+      S.settings.dashboardWidgets = widgets;
+      save();
+      rerenderPage();
+    }
+  } else if (dropCol !== undefined && dropRow !== undefined) {
+    // Move to empty cell
+    src.col = src.w === 2 ? 1 : dropCol;
+    src.row = dropRow;
+    S.settings.dashboardWidgets = widgets;
+    save();
+    rerenderPage();
+  }
+}
+
+// ─── Old aliases kept so nothing breaks ─────────────────────────────────────
+function dashWidgetDragStart() {}
+function dashWidgetDragEnd() {}
+function dashWidgetDragOver() {}
+function dashWidgetDrop() {}
+
+// Individual widget HTML renderers — receive pre-computed dash context
+function renderWidget(id, ctx) {
+  const { doneToday, total, pct, goalPct, activeGoals, nextHabit, notebookCount, latestNote, aiCoachCopy,
+          streak, focusLabel, greet, name, notebook } = ctx;
+  const today = getTodayStr();
+
+  // ── Main content widgets ──────────────────────────────────────────────────
+  if (id === "ring") {
+    const r = 28, circ = +(2 * Math.PI * r).toFixed(2);
+    const offset = +(circ - circ * (pct / 100)).toFixed(2);
+    const ringColor = pct === 100 ? "#0c9b6b" : "#4b6ef6";
+    return `<div class="dash-panel">
+      <div class="dash-greeting">
+        <div class="dash-greeting-name">${esc(greet)}, ${esc(name)}</div>
+        <div class="dash-greeting-date">${fmtLongDate(getNow())}</div>
+      </div>
+      <div class="dash-ring-row">
+        <div class="ring-wrap">
+          <svg width="84" height="84" viewBox="0 0 72 72" aria-hidden="true">
+            <circle cx="36" cy="36" r="${r}" fill="none" stroke="var(--border)" stroke-width="6"></circle>
+            <circle class="dashboard-ring-progress" data-offset="${offset}" data-circ="${circ}"
+              cx="36" cy="36" r="${r}" fill="none" stroke="${ringColor}" stroke-width="6"
+              stroke-linecap="round" stroke-dasharray="${circ}" stroke-dashoffset="${offset}"
+              transform="rotate(-90 36 36)" style="transition:stroke-dashoffset .7s ease"></circle>
+          </svg>
+          <div class="ring-center"><strong>${pct}%</strong><span>${doneToday}/${total}</span></div>
+        </div>
+        <div class="dash-ring-info">
+          <div class="dash-ring-title">Today's progress</div>
+          <div class="dash-ring-val">${pct}%</div>
+          <div class="dash-ring-sub">${focusLabel}</div>
+          <div class="dash-stats">
+            <div class="dash-stat"><div class="dash-stat-kicker">Streak</div><div class="dash-stat-line"><div class="dash-stat-val">${streak}</div><div class="dash-stat-text">days active</div></div></div>
+            <div class="dash-stat"><div class="dash-stat-kicker">Goals</div><div class="dash-stat-line"><div class="dash-stat-val">${activeGoals.length}</div><div class="dash-stat-text">${goalPct}% moving</div></div></div>
+            <div class="dash-stat"><div class="dash-stat-kicker">Notebooks</div><div class="dash-stat-line"><div class="dash-stat-val">${notebookCount}</div><div class="dash-stat-text">${notebookCount===1?"notebook":notebookCount===0?"none yet":"notebooks"}</div></div></div>
+          </div>
+        </div>
+      </div>
+      ${weekStrip()}
+    </div>`;
+  }
+
+  if (id === "habits") {
+    if (!total) return `<div class="dash-side-card"><div class="dash-side-title">Today's habits</div><div style="font-size:13px;color:var(--text3);margin-top:8px">No habits yet — <button class="btn btn-ghost btn-sm" style="font-size:13px;padding:0 4px" onclick="nav('habits')">add one →</button></div></div>`;
+    return `<div class="dash-side-card">
+      <div class="dash-side-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Today's habits</span>
+        <button class="sec-action" onclick="nav('habits')">All habits →</button>
+      </div>
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:6px">
+        ${ctx.S_habits.map(h => habitRow(h, true)).join("")}
+      </div>
+    </div>`;
+  }
+
+  if (id === "goals") {
+    if (!activeGoals.length) return `<div class="dash-side-card"><div class="dash-side-title">Goals in progress</div><div style="font-size:13px;color:var(--text3);margin-top:8px">No active goals — <button class="btn btn-ghost btn-sm" style="font-size:13px;padding:0 4px" onclick="nav('goals')">add one →</button></div></div>`;
+    return `<div class="dash-side-card">
+      <div class="dash-side-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Goals in progress</span>
+        <button class="sec-action" onclick="nav('goals')">All goals →</button>
+      </div>
+      <div class="grid2" style="margin-top:10px">${activeGoals.slice(0, 4).map(g => goalCard(g)).join("")}</div>
+    </div>`;
+  }
+
+  if (id === "notebook") {
+    if (!notebook?.content?.trim()) return "";
+    return `<div class="dash-side-card">
+      <div class="dash-side-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Notebook preview</span>
+        <button class="sec-action" onclick="nav('notes')">Open →</button>
+      </div>
+      <div style="margin-top:10px">${noteRow(notebook)}</div>
+    </div>`;
+  }
+
+  if (id === "quote") {
+    const [q, a] = getDailyQuote();
+    return `<div class="dash-side-card dash-quote-card">
+      <div class="dash-side-title" style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text3);font-weight:800;margin-bottom:8px">Quote of the day</div>
+      <div class="dash-quote-text">"${esc(q)}"</div>
+      <div class="dash-quote-attr">— ${esc(a)}</div>
+    </div>`;
+  }
+
+  if (id === "water") {
+    const water = S.tools?.water || { target: 8, log: {} };
+    const glasses = water.log?.[today] || 0;
+    const target = water.target || 8;
+    const wp = Math.min(100, Math.round((glasses / target) * 100));
+    const dots = Array.from({ length: Math.min(target, 10) }, (_, i) =>
+      `<button class="water-dot${i < glasses ? " filled" : ""}" onclick="logWater(${i < glasses ? i : i + 1})" title="${i+1}">💧</button>`
+    ).join("");
+    return `<div class="dash-side-card">
+      <div class="dash-side-title">Hydration</div>
+      <div style="display:flex;align-items:center;gap:14px;margin:10px 0 6px">
+        <div style="position:relative;flex-shrink:0">
+          ${miniRing(wp, "#3b9edd", 56, 5)}
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1">
+            <span style="font-size:13px;font-weight:800;color:${wp>=100?"var(--success)":"#3b9edd"}">${glasses}</span>
+            <span style="font-size:9px;font-weight:700;color:var(--text3)">/${target}</span>
+          </div>
+        </div>
+        <div style="flex:1">
+          <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:6px">${wp>=100?"Goal reached! 💧":`${target-glasses} glass${target-glasses!==1?"es":""} to go`}</div>
+          <div class="water-dots">${dots}</div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  if (id === "mood") {
+    const moods = S.tools?.mood || [];
+    const todayMood = moods.find(m => m.date === today);
+    const MOOD_EMOJIS = ["😞","😕","😐","🙂","😄"];
+    const MOOD_LABELS = ["Rough","Low","Okay","Good","Great"];
+    return `<div class="dash-side-card">
+      <div class="dash-side-title">How are you feeling?</div>
+      <div class="mood-row">
+        ${MOOD_EMOJIS.map((e, i) =>
+          `<button class="mood-btn${todayMood?.rating===i+1?" active":""}" onclick="logMood(${i+1})" title="${MOOD_LABELS[i]}">${e}</button>`
+        ).join("")}
+      </div>
+      ${todayMood ? `<div style="font-size:12px;color:var(--text3);margin-top:6px;text-align:center">${MOOD_LABELS[todayMood.rating-1]} today</div>` : ""}
+    </div>`;
+  }
+
+  if (id === "score") {
+    const pomLog = (S.tools?.pomodoroTimer?.sessionLog || []).find(e => e.date === today);
+    const studyMins = (pomLog?.focusMinutes || 0) + Math.floor((stopwatchSeconds || 0) / 60);
+    const studyTarget = S.tools?.studyGoal?.dailyMinutes || 0;
+    const comps = [];
+    if (total > 0)             comps.push({ label:"Habits", pct:Math.round((doneToday/total)*100), color:"var(--accent)" });
+    if (activeGoals.length > 0) comps.push({ label:"Goals",  pct:goalPct, color:"var(--lifestyle)" });
+    if (studyTarget>0||studyMins>0) comps.push({ label:"Study", pct:Math.min(100,Math.round((studyMins/(studyTarget||60))*100)), color:"var(--study)" });
+    if (!comps.length) return `<div class="dash-side-card"><div class="dash-side-title">Today's score</div><div style="font-size:12px;color:var(--text3);margin-top:6px">Track habits, goals or study to see your score.</div></div>`;
+    const score = Math.round(comps.reduce((s,c)=>s+c.pct,0)/comps.length);
+    const grade = score>=90?"Excellent 🌟":score>=75?"Strong 💪":score>=55?"Solid 📈":score>=30?"Building":"Starting out";
+    const gc = score>=90?"var(--success)":score>=75?"var(--accent)":score>=55?"var(--warning)":"var(--text3)";
+    return `<div class="dash-side-card">
+      <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
+        <div style="position:relative;flex-shrink:0">
+          ${miniRing(score, gc, 56, 5)}
+          <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1">
+            <span style="font-size:14px;font-weight:800;color:${gc}">${score}</span>
+            <span style="font-size:9px;font-weight:700;color:var(--text3)">%</span>
+          </div>
+        </div>
+        <div>
+          <div class="dash-side-title" style="margin-bottom:3px">Today's score</div>
+          <div style="font-size:12px;font-weight:700;color:${gc}">${grade}</div>
+        </div>
+      </div>
+      <div class="dash-score-bars">
+        ${comps.map(c=>`<div class="dash-score-row"><span>${c.label}</span><div class="dash-score-bar-wrap"><div class="dash-score-bar" style="width:${c.pct}%;background:${c.color}"></div></div><span class="dash-score-pts">${c.pct}%</span></div>`).join("")}
+      </div>
+    </div>`;
+  }
+
+  if (id === "scratchpad") {
+    return `<div class="dash-side-card">
+      <div class="dash-side-title">Quick notes</div>
+      <textarea class="scratch-pad" placeholder="Jot anything down…" oninput="saveScratchpad(this.value)">${esc(S.tools?.scratchpad||"")}</textarea>
+    </div>`;
+  }
+
+  if (id === "ai") {
+    return `<div class="dash-side-card">
+      <div class="dash-side-title">Pulse AI</div>
+      <div class="dash-side-copy">${esc(aiCoachCopy)}</div>
+      <div class="dash-side-list">
+        <div class="dash-mini-row">
+          <div><strong>${nextHabit?esc(nextHabit.name):"All habits complete"}</strong>
+          <span>${nextHabit?"Next habit to check off today":"You cleared your list for today"}</span></div>
+          <div class="dash-mini-dot" style="background:${nextHabit?catColor(nextHabit.category):"var(--success)"}"></div>
+        </div>
+        <div class="dash-mini-row">
+          <div><strong>${activeGoals[0]?esc(activeGoals[0].name):"No active goals yet"}</strong>
+          <span>${activeGoals[0]?`${Math.min(100,Math.round((goalCur(activeGoals[0])/activeGoals[0].target)*100))}% complete`:"Add a goal to track measurable progress"}</span></div>
+          <div class="dash-mini-dot" style="background:${activeGoals[0]?catColor(activeGoals[0].category):"var(--border-strong)"}"></div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  if (id === "glance") {
+    return `<div class="dash-side-card">
+      <div class="dash-side-title">Today at a glance</div>
+      <div class="dash-side-list">
+        <div class="dash-mini-row"><div><strong>${doneToday} habit${doneToday!==1?"s":""} done</strong><span>${Math.max(total-doneToday,0)} remaining</span></div>
+          ${total>0?`<div style="flex-shrink:0">${miniRing(pct,"var(--accent)",28,3)}</div>`:""}
+        </div>
+        <div class="dash-mini-row"><div><strong>${goalPct}% goal momentum</strong><span>${activeGoals.length?`${activeGoals.length} active goal${activeGoals.length!==1?"s":""}` :"No active goals"}</span></div>
+          ${activeGoals.length>0?`<div style="flex-shrink:0">${miniRing(goalPct,"var(--lifestyle)",28,3)}</div>`:""}
+        </div>
+        <div class="dash-mini-row"><div><strong>${notebookCount>0?`${notebookCount} notebook${notebookCount!==1?"s":""}` :"No notebooks yet"}</strong><span>${latestNote?esc(latestNote.slice(0,60)):"Create one in Notes"}</span></div></div>
+      </div>
+    </div>`;
+  }
+
+  return "";
+}
+
+function renderDashWidgets(ctx) {
+  const all     = getDashWidgets();
+  const visible = all.filter(w => !w.hidden);
+  const hidden  = all.filter(w => w.hidden);
+
+  const widgetHtml = visible.map(w => {
+    const content = renderWidget(w.id, ctx);
+    if (!content) return "";
+    const label   = WIDGET_DEFS.find(d => d.id === w.id)?.label || w.id;
+    const isWide  = w.w === 2;
+
+    // CSS grid placement — explicit col/row so widgets can sit anywhere in 2-D
+    const colEnd = isWide ? "1 / span 2" : `${w.col} / span 1`;
+    const gridStyle = `grid-column:${colEnd}; grid-row:${w.row} / span ${w.h || 1};`;
+
+    const editBar = dashEditMode ? `
+      <div class="dash-widget-edit-bar"
+           onpointerdown="startWidgetDrag(event,'${w.id}')"
+           style="cursor:grab;touch-action:none">
+        <span class="dash-drag-handle">⠿</span>
+        <span class="dash-widget-edit-label">${label}</span>
+        <button class="dash-widget-size-btn"
+                onclick="event.stopPropagation();toggleWidgetSize('${w.id}')"
+                title="${isWide ? "Make half-width" : "Make full-width"}">${isWide ? "◧" : "◨"}</button>
+        <button class="dash-widget-hide-btn"
+                onclick="event.stopPropagation();hideWidget('${w.id}')"
+                title="Hide">×</button>
+      </div>` : "";
+
+    return `<div class="dash-widget${dashEditMode ? " dash-widget--editing" : ""}"
+      data-widget-id="${w.id}"
+      style="${gridStyle}">
+      ${editBar}${content}
+    </div>`;
+  }).join("");
+
+  const addBack = hidden.length && dashEditMode ? `
+    <div style="grid-column:1/span 2; grid-row:${Math.max(...visible.map(w => w.row), 0) + 1}">
+      <div class="dash-side-card" style="text-align:center">
+        <div style="font-size:12px;font-weight:700;color:var(--text3);margin-bottom:10px">Hidden — tap to restore</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center">
+          ${hidden.map(w => `<button class="btn btn-outline btn-sm" onclick="showWidgetById('${w.id}')">${WIDGET_DEFS.find(d => d.id === w.id)?.label || w.id}</button>`).join("")}
+        </div>
+      </div>
+    </div>` : "";
+
+  return `<div class="dash-widget-grid">${widgetHtml}${addBack}</div>`;
+}
+
+function showWidgetById(id) {
+  const widgets = getDashWidgets();
+  const w = widgets.find(w => w.id === id);
+  if (w) w.hidden = false;
+  S.settings.dashboardWidgets = widgets;
+  save();
+  rerenderPage();
+}
+
 const PAGES = {
   dashboard() {
     const doneToday = S.habits.filter((h) => h.logs && h.logs[getTodayStr()]).length;
@@ -2448,6 +3581,10 @@ const PAGES = {
           ? "Pulse AI can turn your notes into one realistic next step if you're not sure what to tackle next."
           : "Use Pulse AI when you want a quick reset, a realistic next step, or a short recap across everything in Pulse.";
 
+    // Shared context for sidebar widget renders
+    const ctx = { doneToday, total, pct, goalPct, activeGoals, nextHabit, notebookCount,
+                  latestNote, aiCoachCopy, streak, focusLabel, greet, name, notebook };
+
     const r = 28;
     const circ = 2 * Math.PI * r;
     const offset = circ - circ * (pct / 100);
@@ -2461,165 +3598,76 @@ const PAGES = {
               <div class="dash-greeting-name">${esc(greet)}, ${esc(name)}</div>
               <div class="dash-greeting-date">${fmtLongDate(getNow())}</div>
             </div>
-
             <div class="dash-ring-row">
               <div class="ring-wrap">
                 <svg width="84" height="84" viewBox="0 0 72 72" aria-hidden="true">
                   <circle cx="36" cy="36" r="${r}" fill="none" stroke="var(--border)" stroke-width="6"></circle>
-                  <circle
-                    class="dashboard-ring-progress"
-                    data-offset="${offset.toFixed(2)}"
-                    data-circ="${circ.toFixed(2)}"
-                    cx="36"
-                    cy="36"
-                    r="${r}"
-                    fill="none"
-                    stroke="${ringColor}"
-                    stroke-width="6"
-                    stroke-linecap="round"
-                    stroke-dasharray="${circ.toFixed(2)}"
-                    stroke-dashoffset="${offset.toFixed(2)}"
-                    transform="rotate(-90 36 36)"
-                    style="transition:stroke-dashoffset .7s ease"
-                  ></circle>
+                  <circle class="dashboard-ring-progress"
+                    data-offset="${offset.toFixed(2)}" data-circ="${circ.toFixed(2)}"
+                    cx="36" cy="36" r="${r}" fill="none" stroke="${ringColor}" stroke-width="6"
+                    stroke-linecap="round" stroke-dasharray="${circ.toFixed(2)}"
+                    stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 36 36)"
+                    style="transition:stroke-dashoffset .7s ease"></circle>
                 </svg>
-                <div class="ring-center">
-                  <strong>${doneToday}/${total}</strong>
-                  <span>habits</span>
-                </div>
+                <div class="ring-center"><strong>${pct}%</strong><span>${doneToday}/${total}</span></div>
               </div>
-
               <div class="dash-ring-info">
                 <div class="dash-ring-title">Today's progress</div>
                 <div class="dash-ring-val">${pct}%</div>
                 <div class="dash-ring-sub">${focusLabel}</div>
                 <div class="dash-stats">
-                  <div class="dash-stat">
-                    <div class="dash-stat-kicker">Streak</div>
-                    <div class="dash-stat-line">
-                      <div class="dash-stat-val">${streak}</div>
-                      <div class="dash-stat-text">days active</div>
-                    </div>
-                  </div>
-                  <div class="dash-stat">
-                    <div class="dash-stat-kicker">Goals</div>
-                    <div class="dash-stat-line">
-                      <div class="dash-stat-val">${activeGoals.length}</div>
-                      <div class="dash-stat-text">${goalPct}% moving</div>
-                    </div>
-                  </div>
-                  <div class="dash-stat">
-                    <div class="dash-stat-kicker">Notebooks</div>
-                    <div class="dash-stat-line">
-                      <div class="dash-stat-val">${notebookCount}</div>
-                      <div class="dash-stat-text">${notebookCount === 1 ? "notebook" : notebookCount === 0 ? "none yet" : "notebooks"}</div>
-                    </div>
-                  </div>
+                  <div class="dash-stat"><div class="dash-stat-kicker">Streak</div><div class="dash-stat-line"><div class="dash-stat-val">${streak}</div><div class="dash-stat-text">days active</div></div></div>
+                  <div class="dash-stat"><div class="dash-stat-kicker">Goals</div><div class="dash-stat-line"><div class="dash-stat-val">${activeGoals.length}</div><div class="dash-stat-text">${goalPct}% moving</div></div></div>
+                  <div class="dash-stat"><div class="dash-stat-kicker">Notebooks</div><div class="dash-stat-line"><div class="dash-stat-val">${notebookCount}</div><div class="dash-stat-text">${notebookCount===1?"notebook":notebookCount===0?"none yet":"notebooks"}</div></div></div>
                 </div>
               </div>
             </div>
+            ${weekStrip()}
           </div>
 
-          ${
-            S.habits.length
-              ? `
+          ${S.habits.length ? `
             <div class="page-section">
               <div class="sec-hd">
                 <div class="sec-label">Today's habits</div>
                 <button class="sec-action" onclick="nav('habits')">Open habits</button>
               </div>
-              ${S.habits.map((h) => habitRow(h, true)).join("")}
-            </div>
-          `
-              : ""
-          }
+              ${S.habits.map(h => habitRow(h, true)).join("")}
+            </div>` : ""}
 
-          ${
-            activeGoals.length
-              ? `
+          ${activeGoals.length ? `
             <div class="page-section">
               <div class="sec-hd">
                 <div class="sec-label">Goals in progress</div>
                 <button class="sec-action" onclick="nav('goals')">Open goals</button>
               </div>
-              <div class="grid2">${activeGoals.slice(0, 4).map((g) => goalCard(g)).join("")}</div>
-            </div>
-          `
-              : ""
-          }
+              <div class="grid2">${activeGoals.slice(0, 4).map(g => goalCard(g)).join("")}</div>
+            </div>` : ""}
 
-          ${
-            notebook?.content?.trim()
-              ? `
+          ${notebook?.content?.trim() ? `
             <div class="page-section">
               <div class="sec-hd">
                 <div class="sec-label">Notebook preview</div>
                 <button class="sec-action" onclick="nav('notes')">Open notebook</button>
               </div>
               ${noteRow(notebook)}
-            </div>
-          `
-              : ""
-          }
+            </div>` : ""}
 
-          ${
-            !S.habits.length && !S.goals.length && !S.notes.length
-              ? `
+          ${!S.habits.length && !S.goals.length && !S.notes.length ? `
             <div class="empty">
               <div class="empty-icon">+</div>
               <div class="empty-title">Welcome to Pulse</div>
               <div class="empty-text">Start with one habit, one goal, or one notebook entry. Pulse will turn the rest into a calmer daily rhythm.</div>
-            </div>
-          `
-              : ""
-          }
+            </div>` : ""}
         </div>
 
         <aside class="dash-side">
-          <div class="dash-side-card">
-            <div class="dash-side-title">Pulse AI</div>
-            <div class="dash-side-copy">${esc(aiCoachCopy)}</div>
-            <div class="dash-side-list">
-              <div class="dash-mini-row">
-                <div>
-                  <strong>${nextHabit ? esc(nextHabit.name) : "All habits complete"}</strong>
-                  <span>${nextHabit ? "Next habit to check off today" : "You cleared your list for today"}</span>
-                </div>
-                <div class="dash-mini-dot" style="background:${nextHabit ? catColor(nextHabit.category) : "var(--success)"}"></div>
-              </div>
-              <div class="dash-mini-row">
-                <div>
-                  <strong>${activeGoals[0] ? esc(activeGoals[0].name) : "No active goals yet"}</strong>
-                  <span>${activeGoals[0] ? `${Math.min(100, Math.round((goalCur(activeGoals[0]) / activeGoals[0].target) * 100))}% complete` : "Add a goal to track measurable progress"}</span>
-                </div>
-                <div class="dash-mini-dot" style="background:${activeGoals[0] ? catColor(activeGoals[0].category) : "var(--border-strong)"}"></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="dash-side-card">
-            <div class="dash-side-title">Today at a glance</div>
-            <div class="dash-side-list">
-              <div class="dash-mini-row">
-                <div>
-                  <strong>${doneToday} habits done</strong>
-                  <span>${Math.max(total - doneToday, 0)} remaining today</span>
-                </div>
-              </div>
-              <div class="dash-mini-row">
-                <div>
-                  <strong>${goalPct}% goal momentum</strong>
-                  <span>${activeGoals.length ? `${activeGoals.length} active goal${activeGoals.length !== 1 ? "s" : ""}` : "No active goals right now"}</span>
-                </div>
-              </div>
-              <div class="dash-mini-row">
-                <div>
-                  <strong>${notebookCount > 0 ? `${notebookCount} notebook${notebookCount !== 1 ? "s" : ""}` : "No notebooks yet"}</strong>
-                  <span>${latestNote ? esc(latestNote.slice(0, 72)) : "Create a notebook in the Notes tab to start writing"}</span>
-                </div>
-              </div>
-            </div>
-          </div>
+          ${renderWidget("score",      ctx)}
+          ${renderWidget("quote",      ctx)}
+          ${renderWidget("water",      ctx)}
+          ${renderWidget("mood",       ctx)}
+          ${renderWidget("scratchpad", ctx)}
+          ${renderWidget("ai",         ctx)}
+          ${renderWidget("glance",     ctx)}
         </aside>
       </div>
     `;
@@ -2667,6 +3715,7 @@ const PAGES = {
         </div>
         <div class="page-hero-actions">
           <button class="btn btn-primary" onclick="openAddHabit()">+ Add habit</button>
+          <button class="btn btn-outline btn-sm" onclick="openHabitPackModal()">Use a pack</button>
           <div class="page-kpi-row">
             <div class="page-kpi"><div class="page-kpi-val">${pct}%</div><div class="page-kpi-label">Today</div></div>
             <div class="page-kpi"><div class="page-kpi-val">${streak}</div><div class="page-kpi-label">Streak</div></div>
@@ -3054,6 +4103,396 @@ const PAGES = {
     `;
   },
 
+  history() {
+    const today = getTodayStr();
+    const now = new Date();
+    const calYear = historyYear !== null ? historyYear : now.getFullYear();
+    const calMonth = historyMonth !== null ? historyMonth : now.getMonth();
+    const dateStr = historyDate || today;
+    const dateObj = new Date(dateStr + "T00:00:00");
+    const isToday = dateStr === today;
+
+    // Calendar grid
+    const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    const DAY_HEADERS = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+    const firstDay = new Date(calYear, calMonth, 1).getDay();
+    const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    const todayObj = new Date();
+
+    const cells = [];
+    for (let i = 0; i < firstDay; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) {
+      const ds = `${calYear}-${String(calMonth + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      const cellToday = ds === today;
+      const sel = ds === dateStr;
+      const done = S.habits.filter(h => h.logs && h.logs[ds] === true).length;
+      const total = S.habits.length;
+      const pct = total ? Math.round((done / total) * 100) : 0;
+      const active = done > 0;
+      cells.push({ day: d, ds, cellToday, sel, pct, active, done, total });
+    }
+
+    // Detail data for selected day
+    const habitsDone = S.habits.filter(h => h.logs && h.logs[dateStr] === true);
+    const habitsSkipped = S.habits.filter(h => h.logs && h.logs[dateStr] === "skip");
+    const habitsMissing = S.habits.filter(h => !h.logs || !h.logs[dateStr]);
+    const goalEntries = S.goals.map(g => {
+      const entries = (g.logs || []).filter(l => l.date === dateStr || l.date?.startsWith(dateStr));
+      return entries.length ? { goal: g, entries } : null;
+    }).filter(Boolean);
+    const dayNotes = activityNotes().filter(n => fmtDate(new Date(n.createdAt || n.ts)) === dateStr);
+    const dayMood = (S.tools.mood || []).filter(m => m.date === dateStr);
+    const dayWater = (S.tools.water?.log || {})[dateStr] || 0;
+    const dayPomo = (S.tools.pomodoroTimer?.sessionLog || []).filter(s => s.date === dateStr);
+
+    // Detail sections
+    const sections = [];
+
+    if (habitsDone.length || habitsSkipped.length || habitsMissing.length) {
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>
+            Habits
+            <span class="history-count">${habitsDone.length}/${S.habits.length}</span>
+          </div>
+          <div class="history-items">
+            ${S.habits.map(h => {
+              const status = h.logs && h.logs[dateStr];
+              const done = status === true;
+              const skipped = status === "skip";
+              return `
+                <div class="history-item${done ? " history-item--done" : ""}${skipped ? " history-item--skip" : ""}">
+                  <div class="history-item-icon${done ? " history-item-icon--check" : skipped ? " history-item-icon--skip" : " history-item-icon--empty"}">
+                    ${done ? `<svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/></svg>` : skipped ? `<svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>` : `<span class="history-dot-empty"></span>`}
+                  </div>
+                  <span class="history-item-name">${esc(h.name)}</span>
+                  <span class="history-item-emoji">${h.emoji || ""}</span>
+                </div>`;
+            }).join("")}
+          </div>
+        </div>
+      `);
+    }
+
+    if (goalEntries.length) {
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+            Goals
+          </div>
+          <div class="history-items">
+            ${goalEntries.map(({ goal, entries }) => `
+              <div class="history-item">
+                <div class="history-item-icon history-item-icon--accent">
+                  <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                </div>
+                <div class="history-item-body">
+                  <div class="history-item-name">${esc(goal.name)}</div>
+                  <div class="history-item-sub">+${entries.reduce((s, e) => s + (Number(e.value) || 0), 0)} ${esc(goal.unit || "")} · now ${Math.round((goalCur(goal) / goal.target) * 100)}%</div>
+                </div>
+              </div>`).join("")}
+          </div>
+        </div>
+      `);
+    }
+
+    if (dayNotes.length) {
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"/></svg>
+            Activity notes
+            <span class="history-count">${dayNotes.length}</span>
+          </div>
+          <div class="history-items">
+            ${dayNotes.map(n => `
+              <div class="history-item history-item--note">
+                <div class="history-item-body">
+                  <div class="history-item-name">${esc(n.title || "Note")}</div>
+                  <div class="history-item-sub">${esc((n.content || "").slice(0, 120))}</div>
+                </div>
+              </div>`).join("")}
+          </div>
+        </div>
+      `);
+    }
+
+    if (dayMood.length) {
+      const mood = dayMood[0];
+      const faces = ["😢", "😟", "😐", "🙂", "😊"];
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clip-rule="evenodd"/></svg>
+            Mood
+          </div>
+          <div class="history-items">
+            <div class="history-item">
+              <div class="history-item-icon" style="background:none;font-size:18px">${faces[mood.rating - 1] || "😐"}</div>
+              <div class="history-item-body">
+                <div class="history-item-name">${["Terrible", "Bad", "Okay", "Good", "Great"][mood.rating - 1] || "Okay"}</div>
+                ${mood.note ? `<div class="history-item-sub">${esc(mood.note)}</div>` : ""}
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
+    }
+
+    if (dayWater > 0) {
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="#3b9edd"><path d="M10.394 2.08a1 1 0 00-.788 0c-3.4 1.38-6.106 4.6-6.106 8.42a6.9 6.9 0 1013.8 0c0-3.82-2.706-7.04-6.106-8.42z"/></svg>
+            Water
+            <span class="history-count">${dayWater} glass${dayWater !== 1 ? "es" : ""}</span>
+          </div>
+        </div>
+      `);
+    }
+
+    if (dayPomo.length) {
+      const totalFocus = dayPomo.reduce((s, p) => s + (p.focusMinutes || p.sessions * 25 || 0), 0);
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+            Focus sessions
+            <span class="history-count">${dayPomo.reduce((s, p) => s + p.sessions, 0)} sessions</span>
+          </div>
+          <div class="history-items">
+            <div class="history-item">
+              <div class="history-item-body">
+                <div class="history-item-name">${totalFocus} min focused</div>
+                <div class="history-item-sub">${dayPomo.reduce((s, p) => s + p.sessions, 0)} pomodoro session${dayPomo.reduce((s, p) => s + p.sessions, 0) !== 1 ? "s" : ""}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `);
+    }
+
+    // ── Score section ────────────────────────────────────────────────────────
+    {
+      const scoreHabitPct = S.habits.length ? Math.round((habitsDone.length / S.habits.length) * 100) : 0;
+      const activeGoalsOnDate = S.goals.filter(g => goalCur(g) < g.target);
+      const goalTarget = activeGoalsOnDate.reduce((s, g) => s + g.target, 0);
+      const goalDone = activeGoalsOnDate.reduce((s, g) => s + goalCur(g), 0);
+      const scoreGoalPct = goalTarget ? Math.round((goalDone / goalTarget) * 100) : 0;
+      const studyMins = dayPomo.reduce((s, p) => s + (p.focusMinutes || p.sessions * 25 || 0), 0);
+      const studyTarget = S.tools?.studyGoal?.dailyMinutes || 0;
+      const comps = [];
+      if (S.habits.length > 0) comps.push({ label:"Habits", pct:scoreHabitPct });
+      if (activeGoalsOnDate.length > 0) comps.push({ label:"Goals", pct:scoreGoalPct });
+      if (studyTarget > 0 || studyMins > 0) comps.push({ label:"Study", pct:Math.min(100, Math.round((studyMins / (studyTarget || 60)) * 100)) });
+      if (comps.length) {
+        const score = Math.round(comps.reduce((s, c) => s + c.pct, 0) / comps.length);
+        const grade = score >= 90 ? "Excellent" : score >= 75 ? "Strong" : score >= 55 ? "Solid" : score >= 30 ? "Building" : "Starting out";
+        sections.push(`
+          <div class="history-section">
+            <div class="history-section-title">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clip-rule="evenodd"/></svg>
+              Score
+              <span class="history-count">${score}%</span>
+            </div>
+            <div class="history-items">
+              ${comps.map(c => `<div class="history-item" style="justify-content:space-between"><span style="font-size:13px;font-weight:600;color:var(--text2)">${c.label}</span><span style="font-size:14px;font-weight:800">${c.pct}%</span></div>`).join("")}
+              <div class="history-item" style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px;justify-content:space-between">
+                <span style="font-size:13px;font-weight:700">${grade}</span>
+                <span style="font-size:20px;font-weight:800;letter-spacing:-0.04em;color:var(--accent)">${score}<span style="font-size:13px;color:var(--text3)">%</span></span>
+              </div>
+            </div>
+          </div>
+        `);
+      }
+    }
+
+    // ── Notebook section ─────────────────────────────────────────────────────
+    const notebookDocs = S.notes.filter(n => n.kind === "notebook_doc");
+    if (notebookDocs.length) {
+      const nbCreatedToday = notebookDocs.filter(n => fmtDate(new Date(n.createdAt || n.ts)) === dateStr);
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/><path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"/></svg>
+            Notebooks
+            <span class="history-count">${notebookDocs.length}</span>
+          </div>
+          <div class="history-items">
+            ${notebookDocs.map(nb => `
+              <div class="history-item history-item--note">
+                <div class="history-item-body">
+                  <div class="history-item-name">${esc(nb.title || "Notebook")}</div>
+                  <div class="history-item-sub">${esc((nb.content || "").slice(0, 180)) || "Empty notebook"}</div>
+                </div>
+              </div>`).join("")}
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+            Showing current content — per-day notebook history is not tracked yet.
+            ${nbCreatedToday.length ? `Created on this day.` : ""}
+          </div>
+        </div>
+      `);
+    }
+
+    // ── Scratchpad section ───────────────────────────────────────────────────
+    const scratchContent = S.tools?.scratchpad?.trim();
+    if (scratchContent) {
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path fill-rule="evenodd" d="M10 2a1 1 0 00-1 1v1a1 1 0 002 0V3a1 1 0 00-1-1zM4 4h3a3 3 0 006 0h3a2 2 0 012 2v9a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2zm2.5 7a1.5 1.5 0 100-3 1.5 1.5 0 000 3zm2.45 4a2.5 2.5 0 10-4.9 0h4.9zM12 9a1 1 0 100 2h3a1 1 0 100-2h-3zm-1 4a1 1 0 011-1h2a1 1 0 110 2h-2a1 1 0 01-1-1z" clip-rule="evenodd"/></svg>
+            Quick notes
+          </div>
+          <div class="history-items">
+            <div class="history-item history-item--note">
+              <div class="history-item-body">
+                <div class="history-item-sub">${esc(scratchContent)}</div>
+              </div>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+            Current scratchpad content — per-day history not tracked yet.
+          </div>
+        </div>
+      `);
+    }
+
+    // ── Workout section (current state, no historical tracking) ──────────────
+    const wt = getWorkoutTimer();
+    if (wt.exercises?.length) {
+      const totalSecs = wt.exercises.reduce((s, e) => s + e.work + (e.rest || 0), 0);
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--workout)"><path d="M4 8a2 2 0 012-2h1V4a1 1 0 112 0v2h2V4a1 1 0 112 0v2h1a2 2 0 012 2v1a2 2 0 01-2 2h-1v2a1 1 0 11-2 0v-2H9v2a1 1 0 11-2 0v-2H6a2 2 0 01-2-2V8z"/></svg>
+            Workout timer
+            <span class="history-count">${fmtTimer(totalSecs)}</span>
+          </div>
+          <div class="history-items">
+            ${wt.exercises.map((ex, i) => `
+              <div class="history-item">
+                <div class="history-item-icon history-item-icon--accent">${i + 1}</div>
+                <div class="history-item-body">
+                  <div class="history-item-name">${esc(ex.name)}</div>
+                  <div class="history-item-sub">Work: ${fmtTimer(ex.work)}${ex.rest > 0 ? ` · Rest: ${fmtTimer(ex.rest)}` : ""}</div>
+                </div>
+              </div>`).join("")}
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+            Current workout plan — per-session history is not tracked yet.
+          </div>
+        </div>
+      `);
+    }
+
+    // ── Study timers section (current state) ─────────────────────────────────
+    const st = getStudyTimer();
+    const ft = S.tools?.focusTimer;
+    sections.push(`
+      <div class="history-section">
+        <div class="history-section-title">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--study)"><path d="M10 4l8 3-8 3-8-3 8-3zm-6 5.5 6 2.25 6-2.25V13l-6 3-6-3V9.5z"/></svg>
+          Study timers
+        </div>
+        <div class="history-items">
+          <div class="history-item">
+            <div class="history-item-body">
+              <div class="history-item-name">Study timer</div>
+              <div class="history-item-sub">${st.duration} min sessions · ${fmtTimer(st.remaining)} remaining</div>
+            </div>
+          </div>
+          <div class="history-item">
+            <div class="history-item-body">
+              <div class="history-item-name">Focus timer</div>
+              <div class="history-item-sub">${ft ? `${ft.duration} min · ${fmtTimer(ft.remaining)} remaining` : "Not configured"}</div>
+            </div>
+          </div>
+          <div class="history-item">
+            <div class="history-item-body">
+              <div class="history-item-name">Daily study goal</div>
+              <div class="history-item-sub">${S.tools?.studyGoal?.dailyMinutes ? `${S.tools.studyGoal.dailyMinutes} min/day target` : "No goal set"}</div>
+            </div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+          Current timer configuration — per-day study session history is not tracked yet.
+        </div>
+      </div>
+    `);
+
+    // ── Flashcards section (current state) ──────────────────────────────────
+    const decks = S.tools?.flashcardDecks || [];
+    if (decks.length) {
+      const totalCards = decks.reduce((s, d) => s + (d.cards?.length || 0), 0);
+      sections.push(`
+        <div class="history-section">
+          <div class="history-section-title">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="currentColor" style="color:var(--accent)"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clip-rule="evenodd"/></svg>
+            Flashcards
+            <span class="history-count">${decks.length} deck${decks.length !== 1 ? "s" : ""} · ${totalCards} cards</span>
+          </div>
+          <div class="history-items">
+            ${decks.map(d => `
+              <div class="history-item">
+                <div class="history-item-body">
+                  <div class="history-item-name">${esc(d.name)}</div>
+                  <div class="history-item-sub">${d.cards?.length || 0} card${(d.cards?.length || 0) !== 1 ? "s" : ""}${d.subject ? ` · ${esc(d.subject)}` : ""}</div>
+                </div>
+              </div>`).join("")}
+          </div>
+          <div style="font-size:11px;color:var(--text3);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+            Current flashcard decks — per-session study history is not tracked yet.
+          </div>
+        </div>
+      `);
+    }
+
+    return `
+      <div class="page-hero">
+        <div class="page-hero-accent" style="background:var(--accent)"></div>
+        <div class="page-hero-body">
+          <div class="page-hero-kicker">History</div>
+          <div class="page-hero-num">${MONTHS[calMonth]} <span class="page-hero-num-denom">${calYear}</span></div>
+          <div class="page-hero-sub">${dateObj.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" })}</div>
+        </div>
+        <div class="page-hero-actions">
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-outline btn-sm" onclick="navMonth(-1)">← ${MONTHS[calMonth === 0 ? 11 : calMonth - 1].slice(0, 3)}</button>
+            <button class="btn btn-outline btn-sm" onclick="historyYear=null;historyMonth=null;jumpToToday()">Today</button>
+            <button class="btn btn-outline btn-sm" onclick="navMonth(1)">${MONTHS[calMonth === 11 ? 0 : calMonth + 1].slice(0, 3)} →</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="history-cal">
+        <div class="history-cal-headers">
+          ${DAY_HEADERS.map(h => `<div class="history-cal-hdr">${h}</div>`).join("")}
+        </div>
+        <div class="history-cal-grid">
+          ${cells.map(c => c === null
+            ? `<div class="history-cal-cell history-cal-cell--empty"></div>`
+            : `<div class="history-cal-cell${c.sel ? " history-cal-cell--sel" : ""}${c.cellToday ? " history-cal-cell--today" : ""}${c.active ? " history-cal-cell--active" : ""}" onclick="historyDate='${c.ds}';rerenderPage()" title="${c.ds}">
+                <span class="history-cal-day">${c.day}</span>
+                ${c.total > 0 ? `<span class="history-cal-dot history-cal-dot--${c.pct >= 100 ? "full" : c.pct >= 40 ? "mid" : c.active ? "low" : "none"}"></span>` : ""}
+              </div>`
+          ).join("")}
+        </div>
+      </div>
+
+      ${sections.length
+        ? `<div class="history-sections">${sections.join("")}</div>`
+        : `<div class="empty" style="margin-top:20px">
+            <div class="empty-icon">📅</div>
+            <div class="empty-title">Nothing recorded for this day</div>
+            <div class="empty-text">Come back after you've checked some habits, logged goal progress, or written a note.</div>
+          </div>`
+      }
+    `;
+  },
+
   ai() {
     const _newId = lastCreatedChatId;
     const chatTabsHtml = aiPageChats.map(chat => {
@@ -3161,13 +4600,18 @@ function habitRow(habit, dashMode) {
           </div>
         </div>
         ${!dashMode ? `
+          ${!done ? `<button class="btn btn-ghost btn-sm" onclick="skipHabit('${habit.id}')" title="Skip today — keeps your streak" style="font-size:11px;opacity:0.7">Skip</button>` : ""}
           <button class="btn btn-ghost btn-icon btn-sm heatmap-toggle${calOpen ? " active" : ""}" onclick="toggleHabitCalendar('${habit.id}')" title="View history">
             <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd"/></svg>
           </button>
           <button class="btn btn-ghost btn-icon btn-sm" onclick="deleteHabit('${habit.id}')" title="Delete">×</button>
         ` : ""}
       </div>
-      ${calOpen ? habitHeatmap(habit) : ""}
+      ${calOpen ? habitHeatmap(habit) + `<div class="habit-stats-row">
+        <div class="habit-stat-chip">🔥 Current: ${habitStreak(habit)}d</div>
+        <div class="habit-stat-chip">🏆 Longest: ${habitLongestStreak(habit)}d</div>
+        <div class="habit-stat-chip">✓ Total: ${habitTotalDone(habit)}</div>
+      </div>` : ""}
     </div>
   `;
 }
@@ -3194,11 +4638,17 @@ function goalCard(goal) {
     <div class="goal-card ${done ? "done-card" : ""}" data-goal-id="${goal.id}">
       <div class="goal-top">
         <div class="goal-emoji">${goal.icon}</div>
-        <div class="goal-pct" style="color:${c.color}">${pct}%</div>
+        <div class="goal-ring-wrap">
+          ${miniRing(pct, c.color, 42, 4)}
+          <span class="goal-ring-label" style="color:${c.color}">${pct}%</span>
+        </div>
       </div>
       <div class="goal-name">${esc(goal.name)}</div>
-      <div class="goal-prog-txt">${cur} / ${goal.target} ${esc(goal.unit)}</div>
-      <div class="prog-track" style="margin-top:8px"><div class="prog-fill" style="width:${pct}%;background:${c.color}"></div></div>
+      <div class="goal-prog-txt">${cur} / ${goal.target} ${esc(goal.unit)}${goal.due ? ` · ${goalDueLabel(goal.due)}` : ""}</div>
+      <div class="prog-track" style="margin-top:8px">
+        <div class="prog-fill" style="width:${pct}%;background:${c.color}"></div>
+        ${[25,50,75].map(m => `<div class="prog-milestone-tick" style="left:${m}%"></div>`).join("")}
+      </div>
       ${goalSparkline(goal)}
       <div class="goal-actions">
         ${done ? `<span class="goal-complete">Completed</span>` : `<button class="btn btn-sm btn-outline" onclick="openLogGoal('${goal.id}')">+ Log</button>`}
@@ -3252,7 +4702,21 @@ function toggleHabit(id) {
     toast("Unchecked");
   } else {
     habit.logs[today] = true;
-    toast("Habit done ✓");
+    // Decide which feedback to show — milestones beat "done", perfect day beats both
+    const streak = habitStreak(habit);
+    const STREAK_MILESTONES = [7, 14, 30, 60, 100, 365];
+    // "Perfect day" = every habit is either done (true) or explicitly skipped
+    // but at least one must be truly done (not all skips)
+    const allCoveredNow = S.habits.length > 0 && S.habits.every(h => h.logs && h.logs[today]);
+    const anyActuallyDoneNow = S.habits.some(h => h.logs && h.logs[today] === true);
+    const allDoneNow = allCoveredNow && anyActuallyDoneNow;
+    if (allDoneNow) {
+      celebrateToast("🎉 Perfect day — every habit done!");
+    } else if (STREAK_MILESTONES.includes(streak)) {
+      celebrateToast(`🏆 ${streak}-day streak on "${habit.name}"!`);
+    } else {
+      toast("Habit done ✓");
+    }
   }
   save();
 
@@ -3290,6 +4754,80 @@ function toggleHabit(id) {
   }
 }
 
+const HABIT_PACKS = {
+  morning: {
+    label: "🌅 Morning routine",
+    habits: [
+      { name: "Drink a glass of water", icon: "💧", category: "lifestyle" },
+      { name: "10-minute stretch", icon: "🧘", category: "workout" },
+      { name: "Journal for 5 minutes", icon: "📝", category: "general" },
+      { name: "No phone for first 30 min", icon: "📵", category: "lifestyle" },
+    ]
+  },
+  fitness: {
+    label: "💪 Fitness",
+    habits: [
+      { name: "30-minute workout", icon: "🏋️", category: "workout" },
+      { name: "10,000 steps", icon: "🚶", category: "workout" },
+      { name: "Drink 8 glasses of water", icon: "💧", category: "lifestyle" },
+      { name: "Eat a healthy meal", icon: "🥗", category: "lifestyle" },
+    ]
+  },
+  study: {
+    label: "📚 Study",
+    habits: [
+      { name: "Study for 1 hour", icon: "📚", category: "study" },
+      { name: "Review flashcards", icon: "🎴", category: "study" },
+      { name: "Read 20 pages", icon: "📖", category: "study" },
+      { name: "No social media during study", icon: "📵", category: "study" },
+    ]
+  },
+  wellness: {
+    label: "🧠 Wellness",
+    habits: [
+      { name: "Meditate 10 minutes", icon: "🧘", category: "lifestyle" },
+      { name: "Sleep 8 hours", icon: "😴", category: "lifestyle" },
+      { name: "Gratitude journaling", icon: "🙏", category: "general" },
+      { name: "Go for a walk", icon: "🚶", category: "lifestyle" },
+    ]
+  }
+};
+
+function openHabitPackModal() {
+  modal(`
+    <div class="modal-title">Habit packs</div>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Choose a preset pack to add multiple habits at once.</p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      ${Object.entries(HABIT_PACKS).map(([key, pack]) => `
+        <div class="habit-pack-card" onclick="addHabitPack('${key}')">
+          <div class="habit-pack-title">${pack.label}</div>
+          <div class="habit-pack-preview">${pack.habits.map(h => h.icon + " " + h.name).join(" · ")}</div>
+        </div>
+      `).join("")}
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+    </div>
+  `);
+}
+
+function addHabitPack(packKey) {
+  const pack = HABIT_PACKS[packKey];
+  if (!pack) return;
+  let added = 0;
+  pack.habits.forEach(h => {
+    // Don't add duplicates
+    if (!S.habits.some(existing => existing.name.toLowerCase() === h.name.toLowerCase())) {
+      S.habits.push({ id: "h" + Date.now() + Math.random().toString(36).slice(2, 5), ...h, logs: {}, createdAt: Date.now() });
+      added++;
+    }
+  });
+  save();
+  closeModal();
+  rerenderPage();
+  toast(added > 0 ? `Added ${added} habits from ${pack.label}` : "All habits from this pack already exist");
+}
+
 function openAddHabit() {
   const options = ["🏃", "💧", "📚", "🧘", "🥗", "😴", "📝", "🚶", "🧠", "☀️"];
   modal(`
@@ -3318,6 +4856,21 @@ function saveHabit() {
   toast("Habit added");
 }
 
+function skipHabit(id) {
+  const habit = S.habits.find(h => h.id === id);
+  if (!habit) return;
+  if (!habit.logs) habit.logs = {};
+  const today = getTodayStr();
+  if (habit.logs[today]) {
+    // Already done, can't skip a completed habit
+    return toast("Habit already done today");
+  }
+  habit.logs[today] = "skip"; // special value — counts for streak but not as "done"
+  save();
+  rerenderPage();
+  toast("Habit skipped — streak protected ✓");
+}
+
 function deleteHabit(id) {
   if (!confirm("Delete this habit and its history?")) return;
   S.habits = S.habits.filter((h) => h.id !== id);
@@ -3344,6 +4897,7 @@ function openAddGoal() {
       <div class="form-group"><label class="form-label">Target</label><input id="gTarget" class="form-input" type="number" placeholder="100" min="1" step="any"></div>
       <div class="form-group"><label class="form-label">Unit</label><input id="gUnit" class="form-input" placeholder="reps, hours, pages"></div>
     </div>
+    <div class="form-group"><label class="form-label">Due date <span style="color:var(--text3);font-weight:400">(optional)</span></label><input id="gDue" class="form-input" type="date"></div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveGoal()">Add goal</button>
@@ -3357,9 +4911,10 @@ function saveGoal() {
   const icon = document.getElementById("gIcon").value.trim() || cat(category).emoji;
   const target = parseFloat(document.getElementById("gTarget").value);
   const unit = document.getElementById("gUnit").value.trim() || "units";
+  const due  = document.getElementById("gDue")?.value || "";
   if (!name) return toast("Enter a goal name");
   if (!target || target <= 0) return toast("Enter a valid target");
-  S.goals.push({ id: "g" + Date.now(), name, category, icon, target, unit, logs: [], createdAt: Date.now() });
+  S.goals.push({ id: "g" + Date.now(), name, category, icon, target, unit, due, logs: [], createdAt: Date.now() });
   save();
   closeModal();
   rerenderPage();
@@ -3417,15 +4972,26 @@ function submitLog(id) {
     if (note) {
       addActivityNote(goal, note);
       rerenderPage();
-      toast("🎉 Goal completed!");
+      celebrateToast(`🎉 Goal completed! "${goal.name}" is done!`);
       finalizeCompletedGoal(goal.id);
     } else {
       openCompletionNote(goal.id);
     }
     return;
   }
+
+  // Check if this log crossed a milestone (25 / 50 / 75 %)
+  const prevPct = Math.min(99, Math.round((before / goal.target) * 100));
+  const newPct  = Math.min(99, Math.round((after  / goal.target) * 100));
+  const GOAL_MILESTONES = [25, 50, 75];
+  const crossed = GOAL_MILESTONES.find(m => prevPct < m && newPct >= m);
+
   rerenderPage();
-  toast(`Logged ${value} ${goal.unit}`);
+  if (crossed) {
+    celebrateToast(`🎯 ${crossed}% on "${goal.name}"! Keep going.`);
+  } else {
+    toast(`Logged ${value} ${goal.unit}`);
+  }
 }
 
 function openCompletionNote(goalId) {
@@ -3459,7 +5025,7 @@ function saveCompletionNote(goalId) {
   save();
   closeModal();
   rerenderPage();
-  toast("🎉 Goal completed!");
+  celebrateToast(`🎉 Goal completed!`);
   finalizeCompletedGoal(goalId);
 }
 
@@ -3712,8 +5278,26 @@ function openSettings() {
       <button class="btn btn-outline btn-sm" onclick="applyTheme('dark')">Dark</button>
     </div>
     <div class="divider"></div>
+    <div class="form-label" style="margin-bottom:6px">Daily reminder</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <input id="reminderTimeInput" class="form-input" type="time" value="${S.settings?.reminderTime||""}" style="width:110px">
+      <button class="btn btn-outline btn-sm" onclick="requestNotificationAndSaveTime()">Save reminder</button>
+      <span style="font-size:12px;color:var(--text3)">Requires browser permission</span>
+    </div>
+    <div class="divider"></div>
+    <div class="form-label" style="margin-bottom:6px">Auto dark mode</div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <label class="ai-toggle"><input type="checkbox" id="darkSchedEnabled" ${S.settings?.darkSchedule?.enabled ? "checked" : ""} onchange="toggleDarkSchedule(this)"><span class="ai-toggle-slider"></span></label>
+      <span style="font-size:13px;color:var(--text2)">Switch dark between</span>
+      <input id="darkFrom" class="form-input" type="time" value="${S.settings?.darkSchedule?.from||"20:00"}" style="width:90px" onchange="saveDarkScheduleTime()">
+      <span style="font-size:13px;color:var(--text2)">and</span>
+      <input id="darkTo" class="form-input" type="time" value="${S.settings?.darkSchedule?.to||"07:00"}" style="width:90px" onchange="saveDarkScheduleTime()">
+    </div>
+    <div class="divider"></div>
     <div class="form-label" style="margin-bottom:10px;color:var(--text3)">Account</div>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-outline btn-sm" onclick="importData()">Import data</button>
+      <button class="btn btn-outline btn-sm" onclick="exportData()">Export data</button>
       <button class="btn btn-danger btn-sm" onclick="clearAllData()">Clear all data</button>
       <button class="btn btn-outline btn-sm" onclick="signOut()">Sign out</button>
     </div>
@@ -3742,13 +5326,117 @@ function saveSettings() {
   toast("Settings saved");
 }
 
+let _pendingImportData = null; // temporary hold between modal and confirm
+
+function importData() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data.habits) && !Array.isArray(data.goals)) {
+        return toast("Not a valid Pulse export file");
+      }
+      _pendingImportData = data;
+      const habitCount = (data.habits || []).length;
+      const goalCount  = (data.goals  || []).length;
+      const noteCount  = (data.notes  || []).length;
+      modal(`
+        <div class="modal-title">Import data</div>
+        <p style="font-size:13px;color:var(--text2);margin-bottom:16px">
+          Found <strong>${habitCount} habit${habitCount!==1?"s":""}</strong>,
+          <strong>${goalCount} goal${goalCount!==1?"s":""}</strong> and
+          <strong>${noteCount} note${noteCount!==1?"s":""}</strong> in this file.
+          New items will be merged — existing items with the same ID won't be duplicated.
+        </p>
+        <div class="modal-footer">
+          <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="confirmImport()">Merge &amp; import</button>
+        </div>
+      `);
+    } catch {
+      toast("Could not read file — make sure it's a valid Pulse JSON export");
+    }
+  };
+  input.click();
+}
+
+function confirmImport() {
+  try {
+    const data = _pendingImportData;
+    if (!data) return toast("No import data pending");
+    _pendingImportData = null;
+    // Merge habits (skip if ID already exists)
+    const existingHabitIds = new Set(S.habits.map(h => h.id));
+    (data.habits || []).forEach(h => { if (!existingHabitIds.has(h.id)) S.habits.push(h); });
+    // Merge goals
+    const existingGoalIds = new Set(S.goals.map(g => g.id));
+    (data.goals || []).forEach(g => { if (!existingGoalIds.has(g.id)) S.goals.push(g); });
+    // Merge notes
+    const existingNoteIds = new Set(S.notes.map(n => n.id));
+    (data.notes || []).forEach(n => { if (!existingNoteIds.has(n.id)) S.notes.push(n); });
+    save();
+    closeModal();
+    rerenderPage();
+    toast("Data imported successfully ✓");
+  } catch {
+    toast("Import failed — data may be corrupted");
+  }
+}
+
+function exportData() {
+  const data = {
+    exportedAt: new Date().toISOString(),
+    user: currentUser?.username || "",
+    habits: S.habits,
+    goals: S.goals,
+    notes: S.notes,
+    tools: S.tools,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `pulse-export-${getTodayStr()}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast("Data exported 📥");
+}
+
 function clearAllData() {
   if (!confirm("Delete all your habits, goals, and notes? This cannot be undone.")) return;
   S = { ...defaultState(), settings: { ...S.settings } };
+  // Reset volatile UI state that references the now-deleted data
+  activeNotebookId = null;
+  aiPanelChats = {};
+  aiPanelAnimatedPages = {};
+  aiPageChats = [_makeAIChat("chat-default")];
+  activePageChatId = aiPageChats[0].id;
   save();
   closeModal();
   nav("dashboard");
   toast("Data cleared");
+}
+
+function toggleDarkSchedule(checkbox) {
+  if (!S.settings.darkSchedule) S.settings.darkSchedule = { enabled: false, from: "20:00", to: "07:00" };
+  S.settings.darkSchedule.enabled = checkbox.checked;
+  save();
+  if (checkbox.checked) { applyDarkSchedule(); } else { applyTheme(S.settings.theme); }
+}
+
+function saveDarkScheduleTime() {
+  if (!S.settings.darkSchedule) S.settings.darkSchedule = { enabled: false, from: "20:00", to: "07:00" };
+  S.settings.darkSchedule.from = document.getElementById("darkFrom")?.value || "20:00";
+  S.settings.darkSchedule.to   = document.getElementById("darkTo")?.value   || "07:00";
+  save();
+  applyDarkSchedule();
 }
 
 function applyTheme(theme) {
@@ -4825,9 +6513,20 @@ let toastTimer = null;
 function toast(msg) {
   const el = document.getElementById("toast");
   el.textContent = msg;
+  el.classList.remove("celebrate");
   el.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+
+function celebrateToast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show", "celebrate");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.classList.remove("show", "celebrate");
+  }, 3500);
 }
 
 async function initFirebaseAuth() {
@@ -4862,6 +6561,8 @@ async function initFirebaseAuth() {
         aiPanelAnimatedPages = {};
         aiPageChats = [_makeAIChat("chat-default")];
         activePageChatId = aiPageChats[0].id;
+        stopwatchRunning = false; stopwatchSeconds = 0;
+        clearInterval(stopwatchTick); stopwatchTick = null;
         activeNotebookId = null;
         noteFilter = "notebook";
         notebookSearch = "";
